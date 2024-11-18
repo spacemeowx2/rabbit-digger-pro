@@ -61,7 +61,13 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'tutorialSidebar',
           position: 'left',
-          label: '教程',
+          label: '入门指南',
+        },
+        {
+          type: 'docSidebar',
+          sidebarId: 'configSidebar',
+          position: 'left',
+          label: '配置指南',
         },
         {
           href: 'https://github.com/rabbit-digger/rabbit-digger-pro',

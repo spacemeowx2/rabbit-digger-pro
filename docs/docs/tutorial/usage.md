@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # 快速上手
 
 `Rabbit Digger Pro` 是一个命令行程序. 在不提供参数的情况下, 它会读取工作目录下的 `config.yaml` 作为配置文件, 然后开始运行. 如果需要指定配置文件为其他位置, 可以传入参数 `-c`.
@@ -43,7 +47,7 @@ server:
 在配置文件的其他地方, 你可以使用由 `import` 导入的代理和规则. 例如在 `server` 中引用 `clash_rule`.
 
 ::: warning
-请注意, `import` 阶段对 `url` 的请求并不会经过 `Rabbit Digger Pro` 中的任何代理. 如果有通过代理访问的需求, 需要设置环境变量 `http_proxy`, `https_proxy`. 
+请注意, `import` 阶段对 `url` 的请求并不会经过 `Rabbit Digger Pro` 中的任何代理. 如果有通过代理访问的需求, 需要设置环境变量 `http_proxy`, `https_proxy`.
 :::
 
 ```yaml
@@ -78,9 +82,9 @@ import:
 
 我们希望在连接发生时, 通过判断域名来走不同的出口:
 
-* 当域名以 `google.com` `结尾`时, 通过 `jp` 连接.
-* 当域名中`包含` `twitter` 时, 通过 `us` 连接.
-* 其他情况, 通过 `local` 连接.
+- 当域名以 `google.com` `结尾`时, 通过 `jp` 连接.
+- 当域名中`包含` `twitter` 时, 通过 `us` 连接.
+- 其他情况, 通过 `local` 连接.
 
 ::: tip
 `local` 代表使用本机直接连接. 即使你没有在 `net` 中声明也默认存在. 然而你还是可以通过在 `net` 中声明 `local` 来覆盖这个默认行为.
