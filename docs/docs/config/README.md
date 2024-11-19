@@ -1,10 +1,10 @@
 ---
-sidebar: auto
+sidebar_position: 2
 ---
 
 # 配置
 
-Rabbit Digger 支持任意个数的 `server` 和 `net`.
+Rabbit Digger Pro 支持任意个数的 `server` 和 `net`.
 
 `net` 代表着一种虚拟的网络. 它可以是本地网络, 也可以通过代理提供的网络. 甚至连规则也是一种 `net`.
 
