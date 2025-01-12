@@ -144,6 +144,10 @@ impl Storage for FileStorage {
     }
 
     async fn set(&self, key: &str, value: &str) -> Result<()> {
+        if value.is_empty() {
+            return Ok(());
+        }
+
         let _ = self.lock.write().await;
         let mut index = self.get_index().await?;
 
