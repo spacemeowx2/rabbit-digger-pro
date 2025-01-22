@@ -144,7 +144,7 @@ async fn proxy(
     // 验证认证信息
     if !verify_auth(
         req.headers()
-            .get("Authorization")
+            .get(hyper::http::header::PROXY_AUTHORIZATION)
             .map(|h| h.to_str().unwrap_or("")),
         username,
         password,
