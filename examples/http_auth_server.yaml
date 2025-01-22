@@ -1,7 +1,7 @@
 # HTTP 代理服务器配置示例 - 带用户名密码认证
 net:
   direct:
-    type: direct
+    type: local
 server:
   http:
     type: http
