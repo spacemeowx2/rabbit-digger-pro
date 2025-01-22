@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
-
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use hyper::{client::conn as client_conn, Body, Error, Request};
+use std::net::SocketAddr;
 
 use rd_interface::{
     async_trait, impl_async_read_write, Address, INet, ITcpStream, IntoDyn, Net, Result, TcpStream,
@@ -14,6 +14,8 @@ fn map_err(e: Error) -> rd_interface::Error {
 pub struct HttpClient {
     server: Address,
     net: Net,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 pub struct HttpTcpStream(TcpStream);
@@ -41,11 +43,19 @@ impl rd_interface::TcpConnect for HttpClient {
         let socket = self.net.tcp_connect(ctx, &self.server).await?;
         let (mut request_sender, connection) =
             client_conn::handshake(socket).await.map_err(map_err)?;
-        let connect_req = Request::builder()
-            .method("CONNECT")
-            .uri(addr.to_string())
-            .body(Body::empty())
-            .unwrap();
+
+        let mut connect_req = Request::builder().method("CONNECT").uri(addr.to_string());
+
+        // 添加认证头
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            let auth = format!("{}:{}", username, password);
+            let encoded = BASE64.encode(auth);
+            let auth_header = format!("Basic {}", encoded);
+            connect_req = connect_req.header("Authorization", auth_header);
+        }
+
+        let connect_req = connect_req.body(Body::empty()).unwrap();
+
         let connection = connection.without_shutdown();
         let _connect_resp = request_sender.send_request(connect_req);
         let io = connection.await.map_err(map_err)?.io;
@@ -62,7 +72,21 @@ impl INet for HttpClient {
 
 impl HttpClient {
     pub fn new(net: Net, server: Address) -> Self {
-        Self { server, net }
+        Self {
+            server,
+            net,
+            username: None,
+            password: None,
+        }
+    }
+
+    pub fn with_auth(net: Net, server: Address, username: String, password: String) -> Self {
+        Self {
+            server,
+            net,
+            username: Some(username),
+            password: Some(password),
+        }
     }
 }
 
