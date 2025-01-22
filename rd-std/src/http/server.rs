@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use hyper::{
     client::conn as client_conn, http, server::conn as server_conn, service::service_fn, Body,
     Method, Request, Response,
@@ -11,6 +12,8 @@ use crate::ContextExt;
 #[derive(Clone)]
 pub struct HttpServer {
     net: Net,
+    username: Option<String>,
+    password: Option<String>,
 }
 
 impl HttpServer {
@@ -22,14 +25,38 @@ impl HttpServer {
             .http1_preserve_header_case(true)
             .http1_title_case_headers(true)
             .http1_keep_alive(true)
-            .serve_connection(socket, service_fn(move |req| proxy(net.clone(), req, addr)))
+            .serve_connection(
+                socket,
+                service_fn(move |req| {
+                    proxy(
+                        net.clone(),
+                        req,
+                        addr,
+                        self.username.clone(),
+                        self.password.clone(),
+                    )
+                }),
+            )
             .with_upgrades()
             .await?;
 
         Ok(())
     }
+
     pub fn new(net: Net) -> Self {
-        Self { net }
+        Self {
+            net,
+            username: None,
+            password: None,
+        }
+    }
+
+    pub fn with_auth(net: Net, username: String, password: String) -> Self {
+        Self {
+            net,
+            username: Some(username),
+            password: Some(password),
+        }
     }
 }
 
@@ -67,9 +94,70 @@ impl Http {
             bind,
         }
     }
+
+    pub fn with_auth(
+        listen_net: Net,
+        net: Net,
+        bind: Address,
+        username: String,
+        password: String,
+    ) -> Self {
+        Http {
+            server: HttpServer::with_auth(net, username, password),
+            listen_net,
+            bind,
+        }
+    }
 }
 
-async fn proxy(net: Net, req: Request<Body>, addr: SocketAddr) -> anyhow::Result<Response<Body>> {
+fn verify_auth(
+    auth_header: Option<&str>,
+    username: Option<String>,
+    password: Option<String>,
+) -> bool {
+    if username.is_none() || password.is_none() {
+        return true; // 如果没有设置认证信息，则允许所有请求
+    }
+
+    if let Some(auth) = auth_header {
+        if let Some(credentials) = auth.strip_prefix("Basic ") {
+            if let Ok(decoded) = BASE64.decode(credentials) {
+                if let Ok(auth_str) = String::from_utf8(decoded) {
+                    let parts: Vec<&str> = auth_str.splitn(2, ':').collect();
+                    if parts.len() == 2 {
+                        return parts[0] == username.unwrap() && parts[1] == password.unwrap();
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+async fn proxy(
+    net: Net,
+    req: Request<Body>,
+    addr: SocketAddr,
+    username: Option<String>,
+    password: Option<String>,
+) -> anyhow::Result<Response<Body>> {
+    // 验证认证信息
+    if !verify_auth(
+        req.headers()
+            .get("Authorization")
+            .map(|h| h.to_str().unwrap_or("")),
+        username,
+        password,
+    ) {
+        let mut resp = Response::new(Body::from("Unauthorized"));
+        *resp.status_mut() = http::StatusCode::UNAUTHORIZED;
+        resp.headers_mut().insert(
+            "WWW-Authenticate",
+            http::HeaderValue::from_static("Basic realm=\"Proxy Authentication Required\""),
+        );
+        return Ok(resp);
+    }
+
     if let Some(mut dst) = host_addr(req.uri()) {
         if !dst.contains(':') {
             dst += ":80"

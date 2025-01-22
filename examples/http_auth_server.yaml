@@ -1,0 +1,14 @@
+# HTTP 代理服务器配置示例 - 带用户名密码认证
+net:
+  direct:
+    type: direct
+server:
+  http:
+    type: http
+    listen: direct
+    net: direct
+    bind: "127.0.0.1:8080"
+    # 添加认证信息
+    auth:
+      username: "user"
+      password: "pass"
