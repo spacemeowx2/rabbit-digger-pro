@@ -211,8 +211,8 @@ mod tests {
     fn test_registry_debug() {
         let registry = Registry::new_with_builtin().unwrap();
 
-        format!("{:?}", registry);
-        format!("{}", registry);
+        let _ = format!("{:?}", registry);
+        let _ = format!("{}", registry);
     }
 
     #[test]

@@ -134,36 +134,51 @@ fn verify_auth(
     false
 }
 
+// Headers that must be removed when proxying
+const HOP_BY_HOP_HEADERS: [&str; 8] = [
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade",
+];
+
 async fn proxy(
     net: Net,
-    req: Request<Body>,
+    mut req: Request<Body>,
     addr: SocketAddr,
     username: Option<String>,
     password: Option<String>,
 ) -> anyhow::Result<Response<Body>> {
-    // 验证认证信息
     if !verify_auth(
         req.headers()
             .get(hyper::http::header::PROXY_AUTHORIZATION)
             .map(|h| h.to_str().unwrap_or("")),
-        username,
-        password,
+        username.clone(),
+        password.clone(),
     ) {
-        let mut resp = Response::new(Body::from("Unauthorized"));
-        *resp.status_mut() = http::StatusCode::UNAUTHORIZED;
-        resp.headers_mut().insert(
-            "WWW-Authenticate",
-            http::HeaderValue::from_static("Basic realm=\"Proxy Authentication Required\""),
-        );
+        let resp = Response::builder()
+            .status(http::StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+            .header(
+                hyper::header::PROXY_AUTHENTICATE,
+                "Basic realm=\"HTTP Proxy\"",
+            );
+
+        let resp = resp.body(Body::from("Proxy authentication required"))?;
         return Ok(resp);
     }
 
-    if let Some(mut dst) = host_addr(req.uri()) {
+    let uri = req.uri();
+    if let Some(mut dst) = host_addr(uri) {
         if !dst.contains(':') {
             dst += ":80"
         }
         let dst = dst.into_address()?;
 
+        // For CONNECT requests
         if req.method() == Method::CONNECT {
             tokio::spawn(async move {
                 match hyper::upgrade::on(req).await {
@@ -179,8 +194,50 @@ async fn proxy(
                 Ok(()) as anyhow::Result<()>
             });
 
-            Ok(Response::new(Body::empty()))
+            let resp = Response::builder().status(http::StatusCode::OK);
+            Ok(resp.body(Body::empty())?)
         } else {
+            // For non-CONNECT requests
+            // Ensure absolute-form URI
+            if !uri.scheme().is_some() && !uri.authority().is_some() {
+                if let Some(host) = req.headers().get(hyper::header::HOST) {
+                    *req.uri_mut() = format!(
+                        "http://{}{}",
+                        host.to_str()?,
+                        uri.path_and_query().map_or("", |p| p.as_str())
+                    )
+                    .parse()?;
+                } else {
+                    let resp = Response::builder().status(http::StatusCode::BAD_REQUEST);
+                    return Ok(resp.body(Body::from("Bad Request: Missing Host header"))?);
+                }
+            }
+
+            // Remove hop-by-hop headers
+            let headers = req.headers_mut();
+            for header in HOP_BY_HOP_HEADERS.iter() {
+                headers.remove(*header);
+            }
+
+            // Remove headers mentioned in Connection header
+            let connection_headers: Vec<String> =
+                if let Some(connection) = headers.get(hyper::header::CONNECTION) {
+                    if let Ok(connection_header) = connection.to_str() {
+                        connection_header
+                            .split(',')
+                            .map(|h| h.trim().to_string())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+
+            for header in connection_headers {
+                headers.remove(header.as_str());
+            }
+
             let stream = net
                 .tcp_connect(&mut Context::from_socketaddr(addr), &dst)
                 .await?;
@@ -193,14 +250,21 @@ async fn proxy(
 
             tokio::spawn(connection);
 
-            let resp = request_sender.send_request(req).await?;
+            let mut resp = request_sender.send_request(req).await?;
+
+            // Remove hop-by-hop headers from response
+            let headers = resp.headers_mut();
+            for header in HOP_BY_HOP_HEADERS.iter() {
+                headers.remove(*header);
+            }
 
             Ok(resp)
         }
     } else {
-        tracing::error!("host is not socket addr: {:?}", req.uri());
-        let mut resp = Response::new(Body::from("CONNECT must be to a socket address"));
-        *resp.status_mut() = http::StatusCode::BAD_REQUEST;
+        tracing::error!("Invalid request URI: {:?}", req.uri());
+        let resp = Response::builder().status(http::StatusCode::BAD_REQUEST);
+
+        let resp = resp.body(Body::from("Bad Request: Invalid request URI format"))?;
 
         Ok(resp)
     }

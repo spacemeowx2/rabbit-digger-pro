@@ -51,7 +51,7 @@ impl rd_interface::TcpConnect for HttpClient {
             let auth = format!("{}:{}", username, password);
             let encoded = BASE64.encode(auth);
             let auth_header = format!("Basic {}", encoded);
-            connect_req = connect_req.header("Authorization", auth_header);
+            connect_req = connect_req.header(hyper::http::header::PROXY_AUTHORIZATION, auth_header);
         }
 
         let connect_req = connect_req.body(Body::empty()).unwrap();
