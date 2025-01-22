@@ -22,12 +22,32 @@ pub struct HttpNetConfig {
 
 #[rd_config]
 #[derive(Debug)]
+pub struct AuthConfig {
+    username: String,
+    password: String,
+}
+
+#[rd_config]
+#[derive(Debug)]
 pub struct HttpServerConfig {
     bind: Address,
     #[serde(default)]
     net: NetRef,
     #[serde(default)]
     listen: NetRef,
+    #[serde(default)]
+    auth: Option<AuthConfig>,
+}
+
+impl Default for HttpServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: Address::SocketAddr("127.0.0.1:0".parse().unwrap()),
+            net: Default::default(),
+            listen: Default::default(),
+            auth: None,
+        }
+    }
 }
 
 impl Builder<Net> for HttpClient {
@@ -45,12 +65,29 @@ impl Builder<Server> for server::Http {
     type Config = HttpServerConfig;
     type Item = Self;
 
-    fn build(Self::Config { listen, net, bind }: Self::Config) -> Result<Self> {
-        Ok(server::Http::new(
-            listen.value_cloned(),
-            net.value_cloned(),
+    fn build(
+        Self::Config {
+            listen,
+            net,
             bind,
-        ))
+            auth,
+        }: Self::Config,
+    ) -> Result<Self> {
+        if let Some(auth) = auth {
+            Ok(server::Http::with_auth(
+                listen.value_cloned(),
+                net.value_cloned(),
+                bind,
+                auth.username,
+                auth.password,
+            ))
+        } else {
+            Ok(server::Http::new(
+                listen.value_cloned(),
+                net.value_cloned(),
+                bind,
+            ))
+        }
     }
 }
 
