@@ -3,6 +3,7 @@ name = "trojan"
 version = "0.1.0"
 authors = ["spacemeowx2 <spacemeowx2@gmail.com>"]
 edition = "2021"
+description = "Trojan protocol implementation for rabbit-digger"
 
 [dependencies]
 rd-interface = { path = "../../rd-interface/", version = "0.4" }

@@ -3,6 +3,7 @@ name = "raw"
 version = "0.1.0"
 authors = ["spacemeowx2 <spacemeowx2@gmail.com>"]
 edition = "2018"
+description = "Raw network protocol implementation with TUN/TAP support for rabbit-digger"
 
 [dependencies]
 rd-interface = { path = "../../rd-interface/", version = "0.4" }

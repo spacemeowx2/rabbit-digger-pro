@@ -3,6 +3,7 @@ name = "rpc"
 version = "0.1.0"
 authors = ["spacemeowx2 <spacemeowx2@gmail.com>"]
 edition = "2021"
+description = "RPC protocol implementation for cross-server communication in rabbit-digger"
 
 [dependencies]
 rd-interface = { path = "../../rd-interface/", version = "0.4" }

@@ -3,7 +3,7 @@ name = "rabbit-digger-pro"
 version = "0.1.0"
 authors = ["spacemeowx2 <spacemeowx2@gmail.com>"]
 edition = "2021"
-description = "Just a stub"
+description = "A modern proxy server with multiple protocols support"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
