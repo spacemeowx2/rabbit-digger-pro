@@ -43,6 +43,7 @@ async-stream = "0.3.0"
 once_cell = "1.7.2"
 
 axum = { version = "0.6.19", features = ["ws"], optional = true }
+jsonrpc-core = { version = "18.0.0", optional = true }
 serde_urlencoded = { version = "0.7.1", optional = true }
 tower-http = { version = "0.4.3", features = [
     "fs",
@@ -92,6 +93,7 @@ rusty-hook = "0.11.0"
 default = ["ss", "trojan", "rpc", "obfs", "api_server", "rhai", "raw"]
 api_server = [
     "axum",
+    "jsonrpc-core",
     "serde_urlencoded",
     "tower-http",
     "json-patch",

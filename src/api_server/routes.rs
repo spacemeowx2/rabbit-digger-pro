@@ -24,6 +24,7 @@ use crate::storage::{FileStorage, FolderType};
 
 use super::{
     handlers::{self, Ctx},
+    v2::handlers as v2_handlers,
     ApiServer,
 };
 
@@ -76,6 +77,7 @@ impl ApiServer {
             .route("/userdata", get(handlers::list_userdata))
             .route("/stream/connection", get(handlers::get_connection))
             .route("/stream/logs", get(handlers::ws_log))
+            .route("/v2/ws", get(v2_handlers::websocket_handler))
             .layer(Extension(ctx));
 
         if let Some(token) = &self.access_token {

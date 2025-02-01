@@ -7,6 +7,7 @@ use crate::config::ConfigManager;
 
 mod handlers;
 mod routes;
+pub mod v2;
 
 pub struct ApiServer {
     pub rabbit_digger: RabbitDigger,
