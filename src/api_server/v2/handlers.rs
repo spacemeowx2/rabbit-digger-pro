@@ -37,7 +37,7 @@ async fn handle_ws(mut socket: WebSocket, ctx: Arc<Ctx>) {
         async move {
             match ctx.rd.get_config(|c| c.to_owned()).await {
                 Ok(config) => Ok(Value::String(config)),
-                Err(e) => Err(JsonRpcError::internal_error()),
+                Err(_) => Err(JsonRpcError::internal_error()),
             }
         }
     });

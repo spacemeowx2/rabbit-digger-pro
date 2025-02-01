@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub(super) struct Ctx {
+pub(crate) struct Ctx {
     pub(super) rd: RabbitDigger,
     pub(super) cfg_mgr: ConfigManager,
     pub(super) userdata: Arc<FileStorage>,
