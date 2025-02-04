@@ -1,7 +1,7 @@
+import { MainPage } from "@/pages/main"
+
 function App() {
-  return <div className="text-6xl">
-    Test
-  </div>
+  return <><MainPage /></>
 }
 
 export default App
