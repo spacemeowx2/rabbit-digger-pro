@@ -1,3 +1,6 @@
+import useSWR from 'swr'
+
+// 基础接口定义
 export interface ImportSource {
   type: string
   data: Record<string, unknown>
@@ -22,135 +25,213 @@ export interface PostSelectPayload {
   selected: string
 }
 
-// API 响应类型
-export type ApiResponse<T = unknown> = T
-
-// API 错误响应
-export interface ApiError {
-  error: string
-}
-
-// 创建类型安全的 fetch 包装函数
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, init)
-  if (!response.ok) {
-    const error: ApiError = await response.json()
-    throw new Error(error.error)
-  }
-  return response.json()
-}
-
-export async function getConfig(): Promise<string> {
-  return apiFetch('/config')
-}
-
-export async function postConfig(source: ImportSource): Promise<null> {
-  return apiFetch('/config', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(source),
-  })
-}
-
-export type RegistryData = Record<string, Record<string, unknown>>
-export async function getRegistry(): Promise<RegistryData> {
-  return apiFetch('/registry')
-}
-
 export interface Connection {
   connections: Record<string, unknown>
-}
-export async function getConnections(): Promise<Connection> {
-  return apiFetch('/connections')
-}
-
-export async function deleteConnections(): Promise<Connection> {
-  return apiFetch('/connections', {
-    method: 'DELETE',
-  })
-}
-
-export async function getState(): Promise<string> {
-  return apiFetch('/state')
-}
-
-export async function postSelect(netName: string, selected: string): Promise<null> {
-  return apiFetch(`/select/${encodeURIComponent(netName)}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ selected }),
-  })
-}
-
-export async function deleteConn(uuid: string): Promise<boolean> {
-  return apiFetch(`/conn/${encodeURIComponent(uuid)}`, {
-    method: 'DELETE',
-  })
-}
-
-export async function getDelay(netName: string, request: DelayRequest): Promise<DelayResponse | null> {
-  const params = new URLSearchParams()
-  params.set('url', request.url)
-  if (request.timeout !== undefined) {
-    params.set('timeout', request.timeout.toString())
-  }
-  return apiFetch(`/delay/${encodeURIComponent(netName)}?${params.toString()}`)
-}
-
-// Userdata 相关 API
-export async function getUserData<T = unknown>(path: string): Promise<T> {
-  return apiFetch(`/userdata/${encodeURIComponent(path)}`)
-}
-
-export async function putUserData(path: string, data: string): Promise<{ copied: number }> {
-  const response = await fetch(`/api/v1/userdata/${encodeURIComponent(path)}`, {
-    method: 'PUT',
-    body: data,
-  })
-  if (!response.ok) {
-    const error: ApiError = await response.json()
-    throw new Error(error.error)
-  }
-  return response.json()
-}
-
-export async function deleteUserData(path: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/userdata/${encodeURIComponent(path)}`, {
-    method: 'DELETE',
-  })
 }
 
 export interface UserDataList {
   keys: string[]
 }
-export async function listUserData(): Promise<UserDataList> {
-  return apiFetch('/userdata')
+
+export interface ApiError {
+  error: string
 }
 
-// WebSocket 相关函数
-export function connectWebSocket(query: ConnectionQuery = {}): WebSocket {
-  const params = new URLSearchParams()
-  if (query.patch) params.set('patch', 'true')
-  if (query.without_connections) params.set('without_connections', 'true')
+// Define HTTP methods and API endpoints
+type HttpMethod = 'get' | 'post' | 'put' | 'delete'
 
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(
-    `${protocol}//${window.location.host}/api/v1/ws/connection?${params.toString()}`
+type APIEndpoints = {
+  '/config': {
+    get: { response: string; params: void }
+    post: { response: null; params: ImportSource }
+  }
+  '/registry': {
+    get: { response: Record<string, Record<string, unknown>>; params: void }
+  }
+  '/connections': {
+    get: { response: Connection; params: void }
+    delete: { response: Connection; params: void }
+  }
+  '/state': {
+    get: { response: string; params: void }
+  }
+  '/delay/:netName': {
+    get: { response: DelayResponse | null; params: DelayRequest }
+  }
+  '/select/:netName': {
+    post: { response: null; params: PostSelectPayload }
+  }
+  '/conn/:uuid': {
+    delete: { response: boolean; params: void }
+  }
+  '/userdata': {
+    get: { response: UserDataList; params: void }
+  }
+  '/userdata/:path': {
+    get: { response: unknown; params: void }
+    put: { response: { copied: number }; params: string }
+    delete: { response: { ok: boolean }; params: void }
+  }
+}
+
+// Helper type to extract path parameters
+type ExtractRouteParams<T extends string> = string extends T
+  ? Record<string, string>
+  : T extends `${string}:${infer Param}/${infer Rest}`
+  ? { [K in Param | keyof ExtractRouteParams<Rest>]: string }
+  : T extends `${string}:${infer Param}`
+  ? { [K in Param]: string }
+  : Record<string, never>
+
+type EndpointWithParams<T extends keyof APIEndpoints> = T extends `${string}:${string}` ? T : never
+
+type EndpointMethod<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T]> =
+  APIEndpoints[T][M] & { response: unknown; params: unknown }
+
+type FetcherKey<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T] & HttpMethod> =
+  T extends EndpointWithParams<T>
+  ? [T, M, EndpointMethod<T, M>['params'], ExtractRouteParams<T>, string?]
+  : [T, M, EndpointMethod<T, M>['params'], string?]
+
+// Type-safe fetcher function
+async function fetcher<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T] & HttpMethod>(
+  key: FetcherKey<T, M>
+): Promise<EndpointMethod<T, M>['response']> {
+  const [path, method, params, paramsOrBaseUrl, maybeBaseUrl] = key
+  const baseUrl = typeof paramsOrBaseUrl === 'string' ? paramsOrBaseUrl : (maybeBaseUrl || '')
+  const pathParams = typeof paramsOrBaseUrl === 'object' ? paramsOrBaseUrl : undefined
+
+  let url = `${baseUrl}/api${path}`
+
+  if (pathParams) {
+    Object.entries(pathParams).forEach(([key, value]) => {
+      url = url.replace(`:${key}`, encodeURIComponent(String(value)))
+    })
+  }
+
+  if (method === 'get' && params && typeof params === 'object') {
+    const searchParams = new URLSearchParams(
+      Object.entries(params)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => [key, String(value)])
+    )
+    const queryString = searchParams.toString()
+    if (queryString) url += `?${queryString}`
+  }
+
+  const init: RequestInit = {
+    method: method.toUpperCase(),
+    ...(method !== 'get' && params !== undefined && {
+      headers: { 'Content-Type': 'application/json' },
+      body: typeof params === 'string' ? params : JSON.stringify(params)
+    })
+  }
+
+  const response = await fetch(url, init)
+  if (!response.ok) {
+    const error: ApiError = await response.json()
+    throw new Error(error.error)
+  }
+
+  return response.json()
+}
+
+// API Hooks
+export function useConfig(baseUrl?: string) {
+  return useSWR<string>(['/config', 'get', undefined, baseUrl] as const, fetcher)
+}
+
+export function usePostConfig(source: ImportSource, baseUrl?: string) {
+  return useSWR(['/config', 'post', source, baseUrl] as const, fetcher)
+}
+
+export function useRegistry(baseUrl?: string) {
+  return useSWR<Record<string, Record<string, unknown>>>(
+    ['/registry', 'get', undefined, baseUrl] as const,
+    fetcher
   )
-  return ws
 }
 
-export function connectLogWebSocket(): WebSocket {
+export function useConnections(baseUrl?: string) {
+  return useSWR<Connection>(['/connections', 'get', undefined, baseUrl] as const, fetcher)
+}
+
+export function useDeleteConnections(baseUrl?: string) {
+  return useSWR<Connection>(['/connections', 'delete', undefined, baseUrl] as const, fetcher)
+}
+
+export function useState(baseUrl?: string) {
+  return useSWR<string>(['/state', 'get', undefined, baseUrl] as const, fetcher)
+}
+
+export function useSelect(netName: string, selected: string, baseUrl?: string) {
+  return useSWR(
+    ['/select/:netName', 'post', { selected }, { netName }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function useDeleteConn(uuid: string, baseUrl?: string) {
+  return useSWR<boolean>(
+    ['/conn/:uuid', 'delete', undefined, { uuid }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function useDelay(netName: string, request: DelayRequest, baseUrl?: string) {
+  return useSWR<DelayResponse | null>(
+    ['/delay/:netName', 'get', request, { netName }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function useUserData<T = unknown>(path: string, baseUrl?: string) {
+  return useSWR<T>(
+    ['/userdata/:path', 'get', undefined, { path }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function usePutUserData(path: string, data: string, baseUrl?: string) {
+  return useSWR<{ copied: number }>(
+    ['/userdata/:path', 'put', data, { path }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function useDeleteUserData(path: string, baseUrl?: string) {
+  return useSWR<{ ok: boolean }>(
+    ['/userdata/:path', 'delete', undefined, { path }, baseUrl] as const,
+    fetcher
+  )
+}
+
+export function useListUserData(baseUrl?: string) {
+  return useSWR<UserDataList>(['/userdata', 'get', undefined, baseUrl] as const, fetcher)
+}
+
+// WebSocket helpers
+function createWebSocketUrl(path: string, baseUrl = '', params?: URLSearchParams): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${protocol}//${window.location.host}/api/v1/ws/log`)
-  return ws
+  const host = baseUrl ? baseUrl.replace(/^https?:\/\//, '') : window.location.host
+  const queryString = params?.toString() || ''
+  return `${protocol}//${host}/api${path}${queryString ? `?${queryString}` : ''}`
 }
 
-interface UseWebSocketOptions {
+export function connectWebSocket(query: ConnectionQuery = {}, baseUrl = ''): WebSocket {
+  const params = new URLSearchParams(
+    Object.entries(query)
+      .filter(([, value]) => value)
+      .map(([key]) => [key, 'true'])
+  )
+  return new WebSocket(createWebSocketUrl('/v1/ws/connection', baseUrl, params))
+}
+
+export function connectLogWebSocket(baseUrl = ''): WebSocket {
+  return new WebSocket(createWebSocketUrl('/v1/ws/log', baseUrl))
+}
+
+export interface UseWebSocketOptions {
   onMessage?: (data: unknown) => void
   onError?: (error: Event) => void
   onClose?: (event: CloseEvent) => void
@@ -161,8 +242,7 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
 
   ws.onmessage = (event) => {
     try {
-      const data = JSON.parse(event.data)
-      options.onMessage?.(data)
+      options.onMessage?.(JSON.parse(event.data))
     } catch (e) {
       console.error('Failed to parse WebSocket message:', e)
       options.onError?.(e as Event)
@@ -174,11 +254,7 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
   }
 
   return {
-    send: (data: unknown) => {
-      ws.send(JSON.stringify(data))
-    },
-    close: () => {
-      ws.close()
-    },
+    send: (data: unknown) => ws.send(JSON.stringify(data)),
+    close: () => ws.close()
   }
 }
