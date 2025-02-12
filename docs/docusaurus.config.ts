@@ -65,6 +65,12 @@ const config: Config = {
         },
         {
           type: 'docSidebar',
+          sidebarId: 'developSidebar',
+          position: 'left',
+          label: '开发',
+        },
+        {
+          type: 'docSidebar',
           sidebarId: 'configSidebar',
           position: 'left',
           label: '配置指南',
