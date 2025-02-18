@@ -12,6 +12,8 @@ import { isSelectNet, SelectNet } from "@/api/rdp";
 export const SelectNetPanel: React.FC = () => {
   const { data, error } = useConfig("http://127.0.0.1:8030");
   const [openStates, setOpenStates] = useState<Record<string, boolean>>({});
+  const { mutate } = useConfig("http://127.0.0.1:8030");
+  const { select } = useSelect("http://127.0.0.1:8030");
 
   if (error) {
     console.error(error);
@@ -35,7 +37,8 @@ export const SelectNetPanel: React.FC = () => {
 
   const handleSelect = async (netName: string, selected: string) => {
     try {
-      await useSelect(netName, selected, "http://127.0.0.1:8030");
+      await select(netName, selected);
+      await mutate();
     } catch (err) {
       console.error("Failed to select net:", err);
     }

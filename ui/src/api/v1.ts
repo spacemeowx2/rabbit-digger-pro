@@ -102,7 +102,7 @@ type APIEndpoints = {
   '/delay/:netName': {
     get: { response: DelayResponse | null; params: DelayRequest }
   }
-  '/select/:netName': {
+  '/net/:netName': {
     post: { response: null; params: PostSelectPayload }
   }
   '/conn/:uuid': {
@@ -208,11 +208,19 @@ export function useState(baseUrl?: string) {
   return useSWR<string>(['/state', 'get', undefined, baseUrl] as const, fetcher)
 }
 
-export function useSelect(netName: string, selected: string, baseUrl?: string) {
-  return useSWR(
-    ['/select/:netName', 'post', { selected }, { netName }, baseUrl] as const,
-    fetcher
-  )
+export function useSelect(baseUrl?: string) {
+  return {
+    select: async (netName: string, selected: string) => {
+      const key: FetcherKey<'/net/:netName', 'post'> = [
+        '/net/:netName',
+        'post',
+        { selected },
+        { netName },
+        baseUrl
+      ];
+      return fetcher(key);
+    }
+  };
 }
 
 export function useDeleteConn(uuid: string, baseUrl?: string) {
