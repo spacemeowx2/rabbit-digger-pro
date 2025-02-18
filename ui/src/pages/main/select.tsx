@@ -57,12 +57,11 @@ export const SelectNetPanel: React.FC = () => {
                 }`}
             />
           </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2 space-y-2">
+          <CollapsibleContent className="mt-2 flex flex-wrap gap-2">
             {net.list?.map((item) => (
               <Button
                 key={item}
-                variant="outline"
-                className="w-full justify-start"
+                variant={item === net.selected ? "default" : "outline"}
                 onClick={() => handleSelect(netName, item)}
               >
                 {item}
