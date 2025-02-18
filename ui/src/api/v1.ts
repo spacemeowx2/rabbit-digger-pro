@@ -1,9 +1,53 @@
 import useSWR from 'swr'
 
 // 基础接口定义
+export interface ImportStorage {
+  folder: string
+  key: string
+}
+
+export interface ImportUrl {
+  url: string
+  interval?: number
+}
+
 export interface ImportSource {
+  path?: string
+  poll?: ImportUrl
+  storage?: ImportStorage
+  text?: string
+}
+
+export interface Import {
+  name?: string
   type: string
-  data: Record<string, unknown>
+  source: ImportSource
+  [key: string]: unknown
+}
+
+export interface Net {
+  type: string
+  [key: string]: unknown
+}
+
+export interface ServerMetadata {
+  [key: string]: unknown
+}
+
+export interface Server {
+  metadata?: ServerMetadata
+  type: string
+  [key: string]: unknown
+}
+
+export interface Config {
+  id?: string
+  net: Record<string, Net>
+  server: Record<string, Server>
+}
+
+export interface ConfigExt extends Config {
+  import: Import[]
 }
 
 export interface ConnectionQuery {
@@ -42,7 +86,7 @@ type HttpMethod = 'get' | 'post' | 'put' | 'delete'
 
 type APIEndpoints = {
   '/config': {
-    get: { response: string; params: void }
+    get: { response: ConfigExt; params: void }
     post: { response: null; params: ImportSource }
   }
   '/registry': {
@@ -138,7 +182,7 @@ async function fetcher<T extends keyof APIEndpoints, M extends keyof APIEndpoint
 
 // API Hooks
 export function useConfig(baseUrl?: string) {
-  return useSWR<string>(['/config', 'get', undefined, baseUrl] as const, fetcher)
+  return useSWR<ConfigExt>(['/config', 'get', undefined, baseUrl] as const, fetcher)
 }
 
 export function usePostConfig(source: ImportSource, baseUrl?: string) {
