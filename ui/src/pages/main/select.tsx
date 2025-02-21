@@ -10,10 +10,9 @@ import { useState } from "react";
 import { isSelectNet, SelectNet } from "@/api/rdp";
 
 export const SelectNetPanel: React.FC = () => {
-  const { data, error } = useConfig("http://127.0.0.1:8030");
-  const [openStates, setOpenStates] = useState<Record<string, boolean>>({});
-  const { mutate } = useConfig("http://127.0.0.1:8030");
+  const { data, error, mutate } = useConfig("http://127.0.0.1:8030");
   const { select } = useSelect("http://127.0.0.1:8030");
+  const [openStates, setOpenStates] = useState<Record<string, boolean>>({});
 
   if (error) {
     console.error(error);
