@@ -1,5 +1,6 @@
 import { MainPage } from "@/pages/main"
 import { SettingsPage } from "@/pages/settings"
+import { ConnectionPage } from "@/pages/connection"
 import { InstanceProvider } from "@/contexts/instance-provider"
 import { Toaster } from "@/components/ui/sonner"
 import { Navbar } from "@/components/Navbar"
@@ -24,6 +25,7 @@ function App() {
           <Routes>
             <Route path="/" element={<MainPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/connection" element={<ConnectionPage />} />
           </Routes>
         </Layout>
       </BrowserRouter>

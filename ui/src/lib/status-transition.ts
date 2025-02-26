@@ -1,4 +1,4 @@
-import type { StatusTransitionOptions } from "@/contexts/instance-types"
+import type { StatusTransitionOptions } from "@/contexts/instance"
 
 export function getStatusTransitionClasses({
     url,
