@@ -1,2 +1,3 @@
 - 不要直接用 fetch 获取资源，而是使用 ui/src/api/v1.ts 来获取数据。
 - 使用 2 spaces 缩进。使用单引号。
+- 在完成任务前验证是否有 Linter 或者 TypeScript 错误

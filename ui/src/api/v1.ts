@@ -99,7 +99,7 @@ type APIEndpoints = {
   '/state': {
     get: { response: string; params: void }
   }
-  '/delay/:netName': {
+  '/net/:netName/delay': {
     get: { response: DelayResponse | null; params: DelayRequest }
   }
   '/net/:netName': {
@@ -138,7 +138,7 @@ type FetcherKey<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T] & 
   : [T, M, EndpointMethod<T, M>['params'], string?]
 
 // Type-safe fetcher function
-async function fetcher<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T] & HttpMethod>(
+export async function fetcher<T extends keyof APIEndpoints, M extends keyof APIEndpoints[T] & HttpMethod>(
   key: FetcherKey<T, M>
 ): Promise<EndpointMethod<T, M>['response']> {
   const [path, method, params, paramsOrBaseUrl, maybeBaseUrl] = key
@@ -232,7 +232,7 @@ export function useDeleteConn(uuid: string, baseUrl?: string) {
 
 export function useDelay(netName: string, request: DelayRequest, baseUrl?: string) {
   return useSWR<DelayResponse | null>(
-    ['/delay/:netName', 'get', request, { netName }, baseUrl] as const,
+    ['/net/:netName/delay', 'get', request, { netName }, baseUrl] as const,
     fetcher
   )
 }
