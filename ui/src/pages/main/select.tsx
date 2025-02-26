@@ -8,10 +8,12 @@ import { Button } from "@/components/ui/button";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { isSelectNet, SelectNet } from "@/api/rdp";
+import { useInstance } from "@/contexts/instance";
 
 export const SelectNetPanel: React.FC = () => {
-  const { data, error, mutate } = useConfig("http://127.0.0.1:8030");
-  const { select } = useSelect("http://127.0.0.1:8030");
+  const { currentInstance } = useInstance();
+  const { data, error, mutate } = useConfig(currentInstance?.url);
+  const { select } = useSelect(currentInstance?.url);
   const [openStates, setOpenStates] = useState<Record<string, boolean>>({});
 
   if (error) {
