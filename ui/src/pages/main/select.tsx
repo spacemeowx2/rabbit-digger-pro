@@ -26,6 +26,81 @@ const formatLatency = (ms: number | undefined | null) => {
   return { text, colorClass };
 };
 
+interface SelectNetItemProps {
+  netName: string;
+  net: SelectNet;
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  onSelect: (selected: string) => void;
+  testingStates: Record<string, boolean>;
+  latencyResults: Record<string, DelayResponse | null>;
+  onBatchSpeedTest: (netList: string[]) => void;
+}
+
+const SelectNetItem: React.FC<SelectNetItemProps> = ({
+  netName,
+  net,
+  isOpen,
+  onToggleOpen,
+  onSelect,
+  testingStates,
+  latencyResults,
+  onBatchSpeedTest,
+}) => {
+  return (
+    <Collapsible
+      open={isOpen}
+      onOpenChange={onToggleOpen}
+      className="border rounded-lg p-2"
+    >
+      <CollapsibleTrigger className="flex items-center justify-between w-full p-2">
+        <span className="text-lg font-medium">{netName}</span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            disabled={net.list?.some(item => testingStates[item])}
+            onClick={(e) => {
+              e.preventDefault();
+              if (net.list) {
+                onBatchSpeedTest(net.list);
+              }
+            }}
+          >
+            <Timer className={`h-4 w-4 ${net.list?.some(item => testingStates[item]) ? 'animate-spin' : ''}`} />
+          </Button>
+          <ChevronDown
+            className={`h-4 w-4 transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
+          />
+        </div>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 flex flex-wrap gap-2">
+        {net.list?.map((item) => {
+          const latency = latencyResults[item]?.response;
+          const { text: latencyText, colorClass } = formatLatency(latency);
+
+          return (
+            <Button
+              key={item}
+              variant={item === net.selected ? 'default' : 'outline'}
+              onClick={() => onSelect(item)}
+              disabled={testingStates[item]}
+            >
+              {item}
+              {item in latencyResults && (
+                <span className={cn('ml-2 text-xs', colorClass)}>
+                  {latencyText}
+                </span>
+              )}
+            </Button>
+          );
+        })}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+};
+
 export const SelectNetPanel: React.FC = () => {
   const { currentInstance } = useInstance();
   const { data, error, mutate } = useConfig(currentInstance?.url);
@@ -59,12 +134,11 @@ export const SelectNetPanel: React.FC = () => {
       await select(netName, selected);
       await mutate();
     } catch (err) {
-      console.error("Failed to select net:", err);
+      console.error('Failed to select net:', err);
     }
   };
 
   const handleBatchSpeedTest = async (netList: string[]) => {
-    // Mark all nodes in this group as testing
     setTestingStates(prev => {
       const newState = { ...prev };
       netList.forEach(item => {
@@ -74,10 +148,8 @@ export const SelectNetPanel: React.FC = () => {
     });
 
     try {
-      // Create a limit function
       const limit = pLimit(CONCURRENT_TESTS);
 
-      // Create an array of limited promises
       const promises = netList.map(item =>
         limit(async () => {
           try {
@@ -89,13 +161,11 @@ export const SelectNetPanel: React.FC = () => {
               currentInstance?.url
             ]);
 
-            // Update result immediately when each test completes
             setLatencyResults(prev => ({
               ...prev,
               [item]: latency
             }));
 
-            // Clear testing state for this item
             setTestingStates(prev => ({
               ...prev,
               [item]: false
@@ -103,7 +173,6 @@ export const SelectNetPanel: React.FC = () => {
 
             return { item, latency, error: null };
           } catch (error) {
-            // Update result and clear testing state even on error
             setLatencyResults(prev => ({
               ...prev,
               [item]: null
@@ -117,12 +186,10 @@ export const SelectNetPanel: React.FC = () => {
         })
       );
 
-      // Wait for all tests to complete
       await Promise.all(promises);
     } catch (error) {
       console.error('Failed to complete speed tests:', error);
     } finally {
-      // Ensure all testing states are cleared in case of unexpected errors
       setTestingStates(prev => {
         const newState = { ...prev };
         netList.forEach(item => {
@@ -136,58 +203,17 @@ export const SelectNetPanel: React.FC = () => {
   return (
     <div className="space-y-4">
       {selectNets.map(([netName, net]) => (
-        <Collapsible
+        <SelectNetItem
           key={netName}
-          open={openStates[netName]}
-          onOpenChange={() => toggleOpen(netName)}
-          className="border rounded-lg p-2"
-        >
-          <CollapsibleTrigger className="flex items-center justify-between w-full p-2">
-            <span className="text-lg font-medium">{netName}</span>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                disabled={net.list?.some(item => testingStates[item])}
-                onClick={(e) => {
-                  e.preventDefault(); // Prevent triggering Collapsible
-                  if (net.list) {
-                    handleBatchSpeedTest(net.list);
-                  }
-                }}
-              >
-                <Timer className={`h-4 w-4 ${net.list?.some(item => testingStates[item]) ? 'animate-spin' : ''}`} />
-              </Button>
-              <ChevronDown
-                className={`h-4 w-4 transition-transform duration-200 ${openStates[netName] ? "transform rotate-180" : ""
-                  }`}
-              />
-            </div>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="mt-2 flex flex-wrap gap-2">
-            {net.list?.map((item) => {
-              const latency = latencyResults[item]?.response;
-              const { text: latencyText, colorClass } = formatLatency(latency);
-
-              return (
-                <Button
-                  key={item}
-                  variant={item === net.selected ? 'default' : 'outline'}
-                  onClick={() => handleSelect(netName, item)}
-                  disabled={testingStates[item]}
-                >
-                  {item}
-                  {item in latencyResults && (
-                    <span className={cn('ml-2 text-xs', colorClass)}>
-                      {latencyText}
-                    </span>
-                  )}
-                </Button>
-              );
-            })}
-          </CollapsibleContent>
-        </Collapsible>
+          netName={netName}
+          net={net}
+          isOpen={openStates[netName]}
+          onToggleOpen={() => toggleOpen(netName)}
+          onSelect={(selected) => handleSelect(netName, selected)}
+          testingStates={testingStates}
+          latencyResults={latencyResults}
+          onBatchSpeedTest={handleBatchSpeedTest}
+        />
       ))}
     </div>
   );
