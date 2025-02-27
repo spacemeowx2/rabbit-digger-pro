@@ -1,14 +1,14 @@
 interface Net {
-    type: string;
-    [key: string]: unknown;
+  type: string;
+  [key: string]: unknown;
 }
 
 export interface SelectNet extends Net {
-    type: "select";
-    list: string[];
-    selected: string
+  type: "select";
+  list: string[];
+  selected: string
 }
 
 export function isSelectNet(net: Net): net is SelectNet {
-    return net.type === "select";
+  return net.type === "select";
 }
