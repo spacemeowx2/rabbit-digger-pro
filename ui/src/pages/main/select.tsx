@@ -12,6 +12,7 @@ import { isSelectNet, SelectNet } from '@/api/rdp';
 import { useInstance } from '@/contexts/instance';
 import { cn } from '@/lib/utils';
 import pLimit from 'p-limit';
+import { useLocalStorage } from '@/hooks/use-local-storage';
 
 // 并发测试数量
 const CONCURRENT_TESTS = 5;
@@ -105,7 +106,7 @@ export const SelectNetPanel: React.FC = () => {
   const { currentInstance } = useInstance();
   const { data, error, mutate } = useConfig(currentInstance?.url);
   const { select } = useSelect(currentInstance?.url);
-  const [openStates, setOpenStates] = useState<Record<string, boolean>>({});
+  const [openStates, setOpenStates] = useLocalStorage<Record<string, boolean>>('selectnet-open-states', {});
   const [testingStates, setTestingStates] = useState<Record<string, boolean>>({});
   const [latencyResults, setLatencyResults] = useState<Record<string, DelayResponse | null>>({});
 
