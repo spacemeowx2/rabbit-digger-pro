@@ -36,7 +36,7 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
         <div>
           {connection.route && (
             <Badge variant="secondary"
-              className={connection.route === "DIRECT" ? "bg-green-100 text-green-800 border-green-200" : "bg-blue-100 text-blue-800 border-blue-200"}>
+              className="bg-indigo-100 text-indigo-800 border-indigo-200">
               {connection.route}
             </Badge>
           )}
@@ -44,7 +44,7 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
         <div className="flex items-center gap-1 text-sm text-gray-600 flex-wrap">
           <Badge variant="outline" className="bg-amber-100 text-amber-800 border-amber-200">{connection.protocol}</Badge>
           <Badge variant="outline" className="bg-emerald-100 text-emerald-800 border-emerald-200">{connection.server}</Badge>
-          <Badge variant="outline" className="bg-blue-100 text-blue-800 border-blue-200">{connection.timestamp}</Badge>
+          <Badge variant="outline" className="bg-violet-100 text-violet-800 border-violet-200">{connection.timestamp}</Badge>
 
           {/* <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-200">
             ↑ {formatBytes(connection.upload || 0)}
@@ -55,14 +55,14 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
 
           {/* Upload Speed Badge - only show when > 0 using ternary expression */}
           {((connection.uploadSpeed || 0) > 0) ? (
-            <Badge variant="outline" className="bg-green-100 text-green-800 border-green-200">
+            <Badge variant="outline" className="bg-blue-100 text-blue-800 border-blue-200">
               ↑ {formatBytes(connection.uploadSpeed || 0)}/s
             </Badge>
           ) : null}
 
           {/* Download Speed Badge - only show when > 0 using ternary expression */}
           {((connection.downloadSpeed || 0) > 0) ? (
-            <Badge variant="outline" className="bg-blue-100 text-blue-800 border-blue-200">
+            <Badge variant="outline" className="bg-cyan-100 text-cyan-800 border-cyan-200">
               ↓ {formatBytes(connection.downloadSpeed || 0)}/s
             </Badge>
           ) : null}
@@ -238,8 +238,8 @@ export const ConnectionsManager = () => {
   };
 
   return (
-    <div className="container py-4 max-w-[1024px] mx-auto">
-      <Card className="bg-white shadow-sm">
+    <div className="container py-4 max-w-[1024px] mx-auto h-[calc(100vh-80px)] flex flex-col">
+      <Card className="bg-white shadow-sm flex-grow flex flex-col">
         <CardHeader className="pb-2">
           <div className="flex justify-between items-center">
             <CardTitle className="text-xl text-gray-800">
@@ -287,8 +287,8 @@ export const ConnectionsManager = () => {
             </div>
           </div>
         </div>
-        <CardContent className="p-0">
-          <div className="max-h-[500px] overflow-y-auto">
+        <CardContent className="p-0 flex-grow flex flex-col">
+          <div className="overflow-y-auto flex-grow">
             {sortedConnections.length > 0 ? (
               sortedConnections.map((connection) => (
                 <ConnectionItem
