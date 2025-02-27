@@ -1,6 +1,7 @@
 import useSWR from 'swr'
-import { useEffect, useState } from 'react'
+import { useState, useMemo, useRef } from 'react'
 import { applyPatch } from 'fast-json-patch'
+import useWebSocket, { ReadyState } from 'react-use-websocket';
 
 // 基础接口定义
 export interface ImportStorage {
@@ -287,28 +288,6 @@ export interface UseWebSocketOptions {
   onClose?: (event: CloseEvent) => void
 }
 
-export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
-  const ws = new WebSocket(url)
-
-  ws.onmessage = (event) => {
-    try {
-      options.onMessage?.(JSON.parse(event.data))
-    } catch (e) {
-      console.error('Failed to parse WebSocket message:', e)
-      options.onError?.(e as Event)
-    }
-  }
-
-  ws.onclose = (event) => {
-    options.onClose?.(event)
-  }
-
-  return {
-    send: (data: unknown) => ws.send(JSON.stringify(data)),
-    close: () => ws.close()
-  }
-}
-
 // MaybePatch represents the two possible message formats from the connection stream
 export type MaybePatch =
   | { full: Record<string, unknown> }
@@ -346,79 +325,77 @@ export interface ConnectionInfo {
  */
 export function useConnectionsStream(baseUrl?: string) {
   const [state, setState] = useState<ConnectionData>();
-  const [error, setError] = useState<Error>();
+  const lastData = useRef<ConnectionData>();
+  const lastTraffic = useRef(new Map<string, { upload: number; download: number }>());
 
-  useEffect(() => {
-    const ws = connectWebSocket({ patch: true }, baseUrl);
-    let lastData: ConnectionData | undefined
-    const lastTraffic = new Map<string, { upload: number, download: number }>();
+  const wsUrl = useMemo(() => {
+    const params = new URLSearchParams([['patch', 'true']]);
+    const url = new URL('/api/stream/connection', baseUrl || window.location.origin);
+    url.protocol = url.protocol.replace('http', 'ws');
+    url.search = params.toString();
+    return url.toString();
+  }, [baseUrl]);
 
-    ws.onmessage = (event) => {
+  const { readyState } = useWebSocket(wsUrl, {
+    shouldReconnect: () => true, // 总是尝试重连
+    reconnectAttempts: 10,
+    reconnectInterval: 3000,
+    retryOnError: true,
+    onMessage: (event) => {
       try {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data as string);
         if (data.full) {
           setState(data.full);
-          lastData = data.full;
-        } else if (data.patch && lastData) {
+          lastData.current = data.full;
+        } else if (data.patch && lastData.current) {
           try {
-            const newData = applyPatch(lastData, data.patch).newDocument;
+            const newData = applyPatch(lastData.current, data.patch).newDocument;
 
             const dataWithSpeeds = {
               ...newData,
               connections: Object.fromEntries(
                 Object.entries(newData.connections).map(([id, conn]) => {
-                  const prevConn = lastTraffic.get(id);
-                  if (prevConn) {
-                    const uploadSpeed = conn.upload - prevConn.upload;
-                    const downloadSpeed = conn.download - prevConn.download;
+                  const prevConn = lastTraffic.current.get(id);
+                  let uploadSpeed = 0;
+                  let downloadSpeed = 0;
 
-                    return [id, {
+                  if (prevConn) {
+                    uploadSpeed = (conn.upload - prevConn.upload);
+                    downloadSpeed = (conn.download - prevConn.download);
+                  }
+
+                  lastTraffic.current.set(id, {
+                    upload: conn.upload,
+                    download: conn.download,
+                  });
+
+                  return [
+                    id,
+                    {
                       ...conn,
                       uploadSpeed,
                       downloadSpeed,
-                    }];
-                  }
-                  return [id, conn];
+                    },
+                  ];
                 })
-              )
+              ),
             };
 
-            lastTraffic.clear();
-            Object.entries(newData.connections).forEach(([id, conn]) => {
-              lastTraffic.set(id, { upload: conn.upload, download: conn.download });
-            });
-
             setState(dataWithSpeeds);
-            lastData = newData;
-          } catch (patchError) {
-            setError(patchError as Error);
-            console.error('Failed to apply JSON patch:', patchError);
+            lastData.current = dataWithSpeeds;
+          } catch (e) {
+            console.error('Failed to apply patch:', e);
           }
-        } else {
-          setError(new Error('Invalid WebSocket message format'));
         }
       } catch (e) {
-        setError(e as Error);
-        console.error('Failed to parse WebSocket message:', e);
+        console.error('Failed to parse message:', e);
       }
-    };
-
-    ws.onclose = () => {
-      console.log('Connection stream closed');
-    };
-
-    ws.onerror = (error) => {
-      console.error('Connection stream error:', error);
-    };
-
-    // Clean up WebSocket on unmount
-    return () => {
-      ws.close();
-    };
-  }, [baseUrl]);
+    },
+  });
 
   return {
     state,
-    error
+    readyState,
+    isConnected: readyState === ReadyState.OPEN,
   };
 }

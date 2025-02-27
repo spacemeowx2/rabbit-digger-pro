@@ -49,12 +49,12 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
           <Badge variant="outline" className="bg-violet-100 text-violet-800 border-violet-200">{connection.timestamp}</Badge>
 
           <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-200">
-            ↓ {formatBytes(connection.download || 0)} ↑ {formatBytes(connection.upload || 0)}
+            ↓ {formatBytes(connection.download)} ↑ {formatBytes(connection.upload)}
           </Badge>
 
           {hasSpeed && (
             <Badge variant="outline" className="bg-cyan-100 text-cyan-800 border-cyan-200">
-              ↓ {formatBytes(connection.downloadSpeed || 0)}/s ↑ {formatBytes(connection.uploadSpeed || 0)}/s
+              ↓ {formatBytes(connection.downloadSpeed)}/s ↑ {formatBytes(connection.uploadSpeed)}/s
             </Badge>
           )}
         </div>
@@ -105,7 +105,8 @@ const formatConnection = ([id, conn]: [string, ConnectionInfo]): Connection => {
 };
 
 // Helper function to format bytes
-const formatBytes = (bytes: number): string => {
+const formatBytes = (bytes?: number | null): string => {
+  if (bytes == null) return '0 B';
   if (bytes === 0) return '0 B';
 
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -253,7 +254,7 @@ export const ConnectionsManager = () => {
               />
             </div>
             <div className="text-sm text-gray-600">
-              Total: ↓ {formatBytes(state?.total_download ?? 0)} | ↑ {formatBytes(state?.total_upload ?? 0)}
+              Total: ↓ {formatBytes(state?.total_download)} | ↑ {formatBytes(state?.total_upload)}
             </div>
           </div>
         </CardHeader>
