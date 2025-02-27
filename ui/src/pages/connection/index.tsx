@@ -27,6 +27,8 @@ interface Connection {
 
 // Connection Item Component
 const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClose: (id: string) => void }) => {
+  const hasSpeed = (connection.uploadSpeed || 0) > 0 || (connection.downloadSpeed || 0) > 0;
+
   return (
     <div className="flex items-center justify-between py-2 px-3 border-b border-gray-200 hover:bg-gray-50">
       <div className="flex flex-col flex-grow gap-1">
@@ -46,26 +48,15 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
           <Badge variant="outline" className="bg-emerald-100 text-emerald-800 border-emerald-200">{connection.server}</Badge>
           <Badge variant="outline" className="bg-violet-100 text-violet-800 border-violet-200">{connection.timestamp}</Badge>
 
-          {/* <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-200">
-            ↑ {formatBytes(connection.upload || 0)}
+          <Badge variant="outline" className="bg-purple-100 text-purple-800 border-purple-200">
+            ↓ {formatBytes(connection.download || 0)} ↑ {formatBytes(connection.upload || 0)}
           </Badge>
-          <Badge variant="outline" className="bg-cyan-100 text-cyan-800 border-cyan-200">
-            ↓ {formatBytes(connection.download || 0)}
-          </Badge> */}
 
-          {/* Upload Speed Badge - only show when > 0 using ternary expression */}
-          {((connection.uploadSpeed || 0) > 0) ? (
-            <Badge variant="outline" className="bg-blue-100 text-blue-800 border-blue-200">
-              ↑ {formatBytes(connection.uploadSpeed || 0)}/s
-            </Badge>
-          ) : null}
-
-          {/* Download Speed Badge - only show when > 0 using ternary expression */}
-          {((connection.downloadSpeed || 0) > 0) ? (
+          {hasSpeed && (
             <Badge variant="outline" className="bg-cyan-100 text-cyan-800 border-cyan-200">
-              ↓ {formatBytes(connection.downloadSpeed || 0)}/s
+              ↓ {formatBytes(connection.downloadSpeed || 0)}/s ↑ {formatBytes(connection.uploadSpeed || 0)}/s
             </Badge>
-          ) : null}
+          )}
         </div>
       </div>
       <Button variant="ghost" size="icon" onClick={() => onClose(connection.id)} className="text-gray-500 hover:text-red-500">

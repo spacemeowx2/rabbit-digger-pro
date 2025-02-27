@@ -351,7 +351,7 @@ export function useConnectionsStream(baseUrl?: string) {
   useEffect(() => {
     const ws = connectWebSocket({ patch: true }, baseUrl);
     let lastData: ConnectionData | undefined
-    const lastTraffic = new WeakMap<ConnectionInfo, { upload: number, download: number }>();
+    const lastTraffic = new Map<string, { upload: number, download: number }>();
 
     ws.onmessage = (event) => {
       try {
@@ -367,7 +367,7 @@ export function useConnectionsStream(baseUrl?: string) {
               ...newData,
               connections: Object.fromEntries(
                 Object.entries(newData.connections).map(([id, conn]) => {
-                  const prevConn = lastTraffic.get(conn);
+                  const prevConn = lastTraffic.get(id);
                   if (prevConn) {
                     const uploadSpeed = conn.upload - prevConn.upload;
                     const downloadSpeed = conn.download - prevConn.download;
@@ -378,11 +378,15 @@ export function useConnectionsStream(baseUrl?: string) {
                       downloadSpeed,
                     }];
                   }
-                  lastTraffic.set(conn, { upload: conn.upload, download: conn.download });
                   return [id, conn];
                 })
               )
             };
+
+            lastTraffic.clear();
+            Object.entries(newData.connections).forEach(([id, conn]) => {
+              lastTraffic.set(id, { upload: conn.upload, download: conn.download });
+            });
 
             setState(dataWithSpeeds);
             lastData = newData;
