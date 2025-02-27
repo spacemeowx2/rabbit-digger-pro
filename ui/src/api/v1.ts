@@ -1,4 +1,6 @@
 import useSWR from 'swr'
+import { useEffect, useState } from 'react'
+import { applyPatch } from 'fast-json-patch'
 
 // 基础接口定义
 export interface ImportStorage {
@@ -204,10 +206,6 @@ export function useDeleteConnections(baseUrl?: string) {
   return useSWR<Connection>(['/connections', 'delete', undefined, baseUrl] as const, fetcher)
 }
 
-export function useState(baseUrl?: string) {
-  return useSWR<string>(['/state', 'get', undefined, baseUrl] as const, fetcher)
-}
-
 export function useSelect(baseUrl?: string) {
   return {
     select: async (netName: string, selected: string) => {
@@ -276,11 +274,11 @@ export function connectWebSocket(query: ConnectionQuery = {}, baseUrl = ''): Web
       .filter(([, value]) => value)
       .map(([key]) => [key, 'true'])
   )
-  return new WebSocket(createWebSocketUrl('/v1/ws/connection', baseUrl, params))
+  return new WebSocket(createWebSocketUrl('/stream/connection', baseUrl, params))
 }
 
 export function connectLogWebSocket(baseUrl = ''): WebSocket {
-  return new WebSocket(createWebSocketUrl('/v1/ws/log', baseUrl))
+  return new WebSocket(createWebSocketUrl('/stream/log', baseUrl))
 }
 
 export interface UseWebSocketOptions {
@@ -309,4 +307,114 @@ export function useWebSocket(url: string, options: UseWebSocketOptions = {}) {
     send: (data: unknown) => ws.send(JSON.stringify(data)),
     close: () => ws.close()
   }
+}
+
+// MaybePatch represents the two possible message formats from the connection stream
+export type MaybePatch =
+  | { full: Record<string, unknown> }
+  | { patch: Array<{ op: string; path: string; value?: unknown }> }
+
+export interface ConnectionData {
+  connections: Record<string, ConnectionInfo>
+  total_upload: number;
+  total_download: number;
+}
+
+export interface ConnectionContext {
+  src_socket_addr: string
+  dest_domain?: string
+  net_list: string[]
+  [key: string]: unknown
+}
+
+export interface ConnectionInfo {
+  protocol: string
+  addr: string
+  upload: number
+  download: number
+  uploadSpeed?: number
+  downloadSpeed?: number
+  start_time: number
+  ctx: ConnectionContext
+  [key: string]: unknown
+}
+
+/**
+ * Hook to track connections using WebSocket
+ * @param baseUrl Base URL for the WebSocket connection
+ * @returns connections as arrays of ConnectionInfo
+ */
+export function useConnectionsStream(baseUrl?: string) {
+  const [state, setState] = useState<ConnectionData>();
+  const [error, setError] = useState<Error>();
+
+  useEffect(() => {
+    const ws = connectWebSocket({ patch: true }, baseUrl);
+    let lastData: ConnectionData | undefined
+    const lastTraffic = new WeakMap<ConnectionInfo, { upload: number, download: number }>();
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.full) {
+          setState(data.full);
+          lastData = data.full;
+        } else if (data.patch && lastData) {
+          try {
+            const newData = applyPatch(lastData, data.patch).newDocument;
+
+            const dataWithSpeeds = {
+              ...newData,
+              connections: Object.fromEntries(
+                Object.entries(newData.connections).map(([id, conn]) => {
+                  const prevConn = lastTraffic.get(conn);
+                  if (prevConn) {
+                    const uploadSpeed = conn.upload - prevConn.upload;
+                    const downloadSpeed = conn.download - prevConn.download;
+
+                    return [id, {
+                      ...conn,
+                      uploadSpeed,
+                      downloadSpeed,
+                    }];
+                  }
+                  lastTraffic.set(conn, { upload: conn.upload, download: conn.download });
+                  return [id, conn];
+                })
+              )
+            };
+
+            setState(dataWithSpeeds);
+            lastData = newData;
+          } catch (patchError) {
+            setError(patchError as Error);
+            console.error('Failed to apply JSON patch:', patchError);
+          }
+        } else {
+          setError(new Error('Invalid WebSocket message format'));
+        }
+      } catch (e) {
+        setError(e as Error);
+        console.error('Failed to parse WebSocket message:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('Connection stream closed');
+    };
+
+    ws.onerror = (error) => {
+      console.error('Connection stream error:', error);
+    };
+
+    // Clean up WebSocket on unmount
+    return () => {
+      ws.close();
+    };
+  }, [baseUrl]);
+
+  return {
+    state,
+    error
+  };
 }

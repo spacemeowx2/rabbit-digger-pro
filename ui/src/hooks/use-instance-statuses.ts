@@ -20,7 +20,7 @@ async function checkInstancesStatus(urls: string[]): Promise<InstanceStatuses> {
   const statuses = await Promise.all(
     validUrls.map(async (url) => {
       try {
-        const response = await fetch(`${url}/api/config`)
+        const response = await fetch(`${url}/api/state`)
         return response.ok
       } catch {
         return false
