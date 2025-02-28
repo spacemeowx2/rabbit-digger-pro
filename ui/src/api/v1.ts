@@ -1,4 +1,5 @@
 import useSWR from 'swr'
+import useSWRMutation from 'swr/mutation'
 import { useState, useMemo, useRef } from 'react'
 import { applyPatch } from 'fast-json-patch'
 import useWebSocket, { ReadyState } from 'react-use-websocket';
@@ -183,13 +184,28 @@ export async function fetcher<T extends keyof APIEndpoints, M extends keyof APIE
   return response.json()
 }
 
+// Modified mutation fetcher with proper typing
+function createMutationFetcher<TData, TBody>(method: string) {
+  return async function mutationFetcher(
+    url: string,
+    { arg }: { arg: TBody }
+  ): Promise<TData> {
+    const response = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(arg)
+    })
+    if (!response.ok) {
+      const error: ApiError = await response.json()
+      throw new Error(error.error)
+    }
+    return response.json()
+  }
+}
+
 // API Hooks
 export function useConfig(baseUrl?: string) {
   return useSWR<ConfigExt>(['/config', 'get', undefined, baseUrl] as const, fetcher)
-}
-
-export function usePostConfig(source: ImportSource, baseUrl?: string) {
-  return useSWR(['/config', 'post', source, baseUrl] as const, fetcher)
 }
 
 export function useRegistry(baseUrl?: string) {
@@ -203,29 +219,58 @@ export function useConnections(baseUrl?: string) {
   return useSWR<Connection>(['/connections', 'get', undefined, baseUrl] as const, fetcher)
 }
 
-export function useDeleteConnections(baseUrl?: string) {
-  return useSWR<Connection>(['/connections', 'delete', undefined, baseUrl] as const, fetcher)
+export function usePostConfig() {
+  return useSWRMutation<ConfigExt, Error, string, ImportSource>(
+    '/api/config',
+    createMutationFetcher<ConfigExt, ImportSource>('POST')
+  )
 }
 
-export function useSelect(baseUrl?: string) {
-  return {
-    select: async (netName: string, selected: string) => {
-      const key: FetcherKey<'/net/:netName', 'post'> = [
-        '/net/:netName',
-        'post',
-        { selected },
-        { netName },
-        baseUrl
-      ];
-      return fetcher(key);
+export function useDeleteConnections(baseUrl?: string) {
+  const url = `${baseUrl || ''}/api/connections`
+  return useSWRMutation<Connection, Error>(
+    url,
+    async (url: string) => {
+      const response = await fetch(url, { method: 'DELETE' })
+      if (!response.ok) {
+        const error: ApiError = await response.json()
+        throw new Error(error.error)
+      }
+      return response.json()
     }
-  };
+  )
+}
+
+export function usePostSelect(baseUrl?: string) {
+  return useSWRMutation<null, Error, string, { netName: string; selected: string }>(
+    '/api/net',
+    async (_, { arg: { netName, selected } }) => {
+      const response = await fetch(`${baseUrl || ''}/api/net/${netName}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected })
+      })
+      if (!response.ok) {
+        const error: ApiError = await response.json()
+        throw new Error(error.error)
+      }
+      return null
+    }
+  )
 }
 
 export function useDeleteConn(uuid: string, baseUrl?: string) {
-  return useSWR<boolean>(
-    ['/conn/:uuid', 'delete', undefined, { uuid }, baseUrl] as const,
-    fetcher
+  const url = `${baseUrl || ''}/api/conn/${uuid}`
+  return useSWRMutation<boolean, Error>(
+    url,
+    async (url: string) => {
+      const response = await fetch(url, { method: 'DELETE' })
+      if (!response.ok) {
+        const error: ApiError = await response.json()
+        throw new Error(error.error)
+      }
+      return response.json()
+    }
   )
 }
 
@@ -243,17 +288,26 @@ export function useUserData<T = unknown>(path: string, baseUrl?: string) {
   )
 }
 
-export function usePutUserData(path: string, data: string, baseUrl?: string) {
-  return useSWR<{ copied: number }>(
-    ['/userdata/:path', 'put', data, { path }, baseUrl] as const,
-    fetcher
+export function usePutUserData(path: string, baseUrl?: string) {
+  const url = `${baseUrl || ''}/api/userdata/${path}`
+  return useSWRMutation<{ copied: number }, Error, string, string>(
+    url,
+    createMutationFetcher<{ copied: number }, string>('PUT')
   )
 }
 
 export function useDeleteUserData(path: string, baseUrl?: string) {
-  return useSWR<{ ok: boolean }>(
-    ['/userdata/:path', 'delete', undefined, { path }, baseUrl] as const,
-    fetcher
+  const url = `${baseUrl || ''}/api/userdata/${path}`
+  return useSWRMutation<{ ok: boolean }, Error>(
+    url,
+    async (url: string) => {
+      const response = await fetch(url, { method: 'DELETE' })
+      if (!response.ok) {
+        const error: ApiError = await response.json()
+        throw new Error(error.error)
+      }
+      return response.json()
+    }
   )
 }
 

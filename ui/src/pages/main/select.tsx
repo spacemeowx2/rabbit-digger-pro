@@ -1,4 +1,4 @@
-import { useConfig, useSelect, fetcher } from '@/api/v1';
+import { useConfig, usePostSelect, fetcher } from '@/api/v1';
 import type { DelayResponse } from '@/api/v1';
 import {
   Collapsible,
@@ -105,7 +105,7 @@ const SelectNetItem: React.FC<SelectNetItemProps> = ({
 export const SelectNetPanel: React.FC = () => {
   const { currentInstance } = useInstance();
   const { data, error, mutate } = useConfig(currentInstance?.url);
-  const { select } = useSelect(currentInstance?.url);
+  const { trigger } = usePostSelect(currentInstance?.url);
   const [openStates, setOpenStates] = useLocalStorage<Record<string, boolean>>('selectnet-open-states', {});
   const [testingStates, setTestingStates] = useState<Record<string, boolean>>({});
   const [latencyResults, setLatencyResults] = useState<Record<string, DelayResponse | null>>({});
@@ -132,7 +132,7 @@ export const SelectNetPanel: React.FC = () => {
 
   const handleSelect = async (netName: string, selected: string) => {
     try {
-      await select(netName, selected);
+      await trigger({ netName, selected });
       await mutate();
     } catch (err) {
       console.error('Failed to select net:', err);
