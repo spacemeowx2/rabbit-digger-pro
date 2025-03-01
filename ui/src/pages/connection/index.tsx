@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { X } from 'lucide-react';
-import { useConnectionsStream, ConnectionInfo, fetcher } from '@/api/v1';
+import { useConnectionsStream, ConnectionInfo, useDeleteConn, useDeleteConnections } from '@/api/v1';
 import { useInstance } from '@/contexts/instance';
 
 // Connection type for UI display
@@ -151,6 +151,8 @@ export const ConnectionsManager = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('time');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const { trigger: triggerDeleteAll } = useDeleteConnections(currentInstance?.url);
+  const { trigger: triggerDeleteConn } = useDeleteConn(currentInstance?.url);
 
   const { formattedConnections, sortedConnections } = useMemo(() => {
     if (!state) {
@@ -210,7 +212,7 @@ export const ConnectionsManager = () => {
     if (!currentInstance?.url) return;
 
     try {
-      await fetcher(['/conn/:uuid', 'delete', undefined, { uuid: id }, currentInstance.url]);
+      await triggerDeleteConn(id);
       // The WebSocket connection will update the state automatically
     } catch (error) {
       console.error('Failed to close connection:', error);
@@ -222,7 +224,7 @@ export const ConnectionsManager = () => {
     if (!currentInstance?.url) return;
 
     try {
-      await fetcher(['/connections', 'delete', undefined, currentInstance.url]);
+      await triggerDeleteAll();
       // The WebSocket connection will update the state automatically
     } catch (error) {
       console.error('Failed to close all connections:', error);

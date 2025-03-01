@@ -227,7 +227,7 @@ export function usePostConfig() {
 }
 
 export function useDeleteConnections(baseUrl?: string) {
-  const url = `${baseUrl || ''}/api/connections`
+  const url = `${baseUrl || ''}/api/connection`
   return useSWRMutation<Connection, Error>(
     url,
     async (url: string) => {
@@ -259,12 +259,11 @@ export function usePostSelect(baseUrl?: string) {
   )
 }
 
-export function useDeleteConn(uuid: string, baseUrl?: string) {
-  const url = `${baseUrl || ''}/api/conn/${uuid}`
-  return useSWRMutation<boolean, Error>(
-    url,
-    async (url: string) => {
-      const response = await fetch(url, { method: 'DELETE' })
+export function useDeleteConn(baseUrl?: string) {
+  return useSWRMutation<boolean, Error, string, string>(
+    '/api/connection',
+    async (url: string, { arg: uuid }) => {
+      const response = await fetch(`${baseUrl || ''}${url}/${uuid}`, { method: 'DELETE' })
       if (!response.ok) {
         const error: ApiError = await response.json()
         throw new Error(error.error)
