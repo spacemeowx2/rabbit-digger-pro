@@ -273,10 +273,12 @@ export function useDeleteConn(baseUrl?: string) {
   )
 }
 
-export function useDelay(netName: string, request: DelayRequest, baseUrl?: string) {
-  return useSWR<DelayResponse | null>(
-    ['/net/:netName/delay', 'get', request, { netName }, baseUrl] as const,
-    fetcher
+export function useDelay(baseUrl?: string) {
+  return useSWRMutation<DelayResponse | null, Error, string, { netName: string } & DelayRequest>(
+    '/api/net',
+    async (_, { arg: { netName, ...request } }) => {
+      return fetcher(['/net/:netName/delay', 'get', request, { netName }, baseUrl] as const)
+    }
   )
 }
 

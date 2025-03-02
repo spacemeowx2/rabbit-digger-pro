@@ -1,4 +1,4 @@
-import { useConfig, usePostSelect, fetcher } from '@/api/v1';
+import { useConfig, usePostSelect, useDelay } from '@/api/v1';
 import type { DelayResponse } from '@/api/v1';
 import {
   Collapsible,
@@ -111,6 +111,7 @@ export const SelectNetPanel: React.FC = () => {
   const { currentInstance } = useInstance();
   const { data, error, mutate } = useConfig(currentInstance?.url);
   const { trigger } = usePostSelect(currentInstance?.url);
+  const { trigger: testDelay } = useDelay(currentInstance?.url);
   const [openStates, setOpenStates] = useLocalStorage<Record<string, boolean>>('selectnet-open-states', {});
   const [testingStates, setTestingStates] = useState<Record<string, boolean>>({});
   const [latencyResults, setLatencyResults] = useState<Record<string, DelayResponse | null>>({});
@@ -152,31 +153,23 @@ export const SelectNetPanel: React.FC = () => {
       });
       return newState;
     });
-
     try {
       const limit = pLimit(CONCURRENT_TESTS);
-
       const promises = netList.map(item =>
         limit(async () => {
           try {
-            const latency = await fetcher<'/net/:netName/delay', 'get'>([
-              '/net/:netName/delay',
-              'get',
-              { url: 'http://www.gstatic.com/generate_204' },
-              { netName: item },
-              currentInstance?.url
-            ]);
-
+            const latency = await testDelay({
+              netName: item,
+              url: 'http://www.gstatic.com/generate_204'
+            });
             setLatencyResults(prev => ({
               ...prev,
               [item]: latency
             }));
-
             setTestingStates(prev => ({
               ...prev,
               [item]: false
             }));
-
             return { item, latency, error: null };
           } catch (error) {
             setLatencyResults(prev => ({
@@ -191,7 +184,6 @@ export const SelectNetPanel: React.FC = () => {
           }
         })
       );
-
       await Promise.all(promises);
     } catch (error) {
       console.error('Failed to complete speed tests:', error);
