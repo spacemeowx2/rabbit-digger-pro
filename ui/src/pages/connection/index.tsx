@@ -4,15 +4,15 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { X } from 'lucide-react';
+import { X, Pause, Play } from 'lucide-react';
 import { useConnectionsStream, ConnectionInfo, useDeleteConn, useDeleteConnections } from '@/api/v1';
 import { useInstance } from '@/contexts/instance';
 
 // Connection type for UI display
 interface Connection {
   id: string;
-  host: string;
-  port: string;
+  addr: string;
+  destDomain?: string
   protocol: string;
   server: string;
   route?: string;
@@ -23,17 +23,27 @@ interface Connection {
   download?: number;
   uploadSpeed?: number;
   downloadSpeed?: number;
+  srcAddr?: string;
+}
+
+type ConnectionItemProps = {
+  connection: Connection;
+  onClose: (id: string) => void;
+  showIP: boolean;
 }
 
 // Connection Item Component
-const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClose: (id: string) => void }) => {
+const ConnectionItem = ({ connection, onClose, showIP }: ConnectionItemProps) => {
   const hasSpeed = (connection.uploadSpeed || 0) > 0 || (connection.downloadSpeed || 0) > 0;
 
   return (
     <div className="flex items-center justify-between py-2 px-3 border-b border-gray-200 hover:bg-gray-50">
       <div className="flex flex-col flex-grow gap-1">
         <div className="flex items-center gap-2">
-          <span className="font-medium">{connection.host}:{connection.port}</span>
+          <span className="font-medium">{connection.destDomain ?? connection.addr}</span>
+          {connection.srcAddr && (
+            <span className="text-sm text-gray-500">from {connection.srcAddr} {(showIP && connection.destDomain) ? `to ${connection.addr}` : ''}</span>
+          )}
         </div>
         <div>
           {connection.route && (
@@ -68,21 +78,8 @@ const ConnectionItem = ({ connection, onClose }: { connection: Connection, onClo
 
 // Convert connection data from API to UI format
 const formatConnection = ([id, conn]: [string, ConnectionInfo]): Connection => {
-  // Extract host and port from addr
-  const parseAddress = (s: string) => {
-    const idx = s.lastIndexOf(':');
-    if (idx === -1) {
-      throw new TypeError('Invalid address');
-    }
-    const host = s.slice(0, idx);
-    const port = s.slice(idx + 1);
-    return { host, port };
-  }
-
-  const dest = parseAddress(conn.addr);
-
   // Calculate timestamp
-  const timestamp = getRelativeTime(conn.start_time); // Convert to milliseconds
+  const timestamp = getRelativeTime(conn.start_time);
   const duration = Math.floor(Date.now() / 1000) - conn.start_time;
 
   const server = conn.ctx.net_list[0];
@@ -90,9 +87,9 @@ const formatConnection = ([id, conn]: [string, ConnectionInfo]): Connection => {
 
   return {
     id,
-    host: dest.host,
-    port: dest.port,
-    protocol: conn.protocol.toUpperCase(),
+    addr: conn.addr,
+    destDomain: conn.ctx.dest_domain,
+    protocol: conn.protocol,
     server,
     route,
     timestamp,
@@ -101,6 +98,7 @@ const formatConnection = ([id, conn]: [string, ConnectionInfo]): Connection => {
     download: conn.download,
     uploadSpeed: conn.uploadSpeed,
     downloadSpeed: conn.downloadSpeed,
+    srcAddr: conn.ctx.src_socket_addr,
   };
 };
 
@@ -148,24 +146,40 @@ const sortOptions: SortConfig[] = [
 export const ConnectionsManager = () => {
   const { currentInstance } = useInstance();
   const { state } = useConnectionsStream(currentInstance?.url);
+  const [frozenState, setFrozenState] = useState<typeof state | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('time');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [showIP, setShowIP] = useState(false);
   const { trigger: triggerDeleteAll } = useDeleteConnections(currentInstance?.url);
   const { trigger: triggerDeleteConn } = useDeleteConn(currentInstance?.url);
 
+  // Toggle pause state
+  const togglePause = () => {
+    setFrozenState(current => current ? null : state);
+  };
+
   const { formattedConnections, sortedConnections } = useMemo(() => {
-    if (!state) {
+    // Use frozen state when paused, otherwise use live state
+    const currentState = frozenState || state;
+
+    if (!currentState) {
       return { formattedConnections: [], filteredConnections: [], sortedConnections: [] };
     }
 
-    const formattedConnections = Object.entries(state.connections).map(formatConnection);
+    const formattedConnections = Object.entries(currentState.connections).map(formatConnection);
 
     // Filter connections based on search query
-    const filteredConnections = formattedConnections.filter(conn =>
-      conn.host.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      conn.port.includes(searchQuery)
-    );
+    const filteredConnections = formattedConnections.filter(conn => {
+      const searchLower = searchQuery.toLowerCase();
+      return (
+        conn.addr.toLowerCase().includes(searchLower) ||
+        conn.destDomain?.toLowerCase().includes(searchLower) ||
+        (conn.srcAddr?.toLowerCase().includes(searchLower)) ||
+        conn.server.toLowerCase().includes(searchLower) ||
+        (conn.route?.toLowerCase().includes(searchLower))
+      );
+    });
 
     const sortedConnections = [...filteredConnections].sort((a, b) => {
       let result = 0;
@@ -193,7 +207,7 @@ export const ConnectionsManager = () => {
     });
 
     return { formattedConnections, filteredConnections, sortedConnections };
-  }, [state, searchQuery, sortOption, sortDirection]);
+  }, [state, frozenState, searchQuery, sortOption, sortDirection]);
 
   // Toggle sort option and direction
   const toggleSort = (option: SortOption) => {
@@ -240,6 +254,23 @@ export const ConnectionsManager = () => {
               Connections <Badge variant="outline" className="ml-2 bg-gray-100">{formattedConnections.length}</Badge>
             </CardTitle>
             <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={togglePause}
+                className={frozenState ? "bg-amber-50" : ""}
+              >
+                {frozenState ? <Play className="h-4 w-4 mr-1" /> : <Pause className="h-4 w-4 mr-1" />}
+                {frozenState ? "Resume" : "Pause"}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowIP(!showIP)}
+                className={showIP ? "bg-blue-50" : ""}
+              >
+                {showIP ? "Hide IP" : "Show IP"}
+              </Button>
               <Button variant="destructive" size="sm" onClick={closeAllConnections}>
                 Close All
               </Button>
@@ -286,6 +317,7 @@ export const ConnectionsManager = () => {
             {sortedConnections.length > 0 ? (
               sortedConnections.map((connection) => (
                 <ConnectionItem
+                  showIP={showIP}
                   key={connection.id}
                   connection={connection}
                   onClose={closeConnection}
