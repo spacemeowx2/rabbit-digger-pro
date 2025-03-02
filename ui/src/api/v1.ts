@@ -1,6 +1,6 @@
 import useSWR from 'swr'
 import useSWRMutation from 'swr/mutation'
-import { useState, useMemo, useRef } from 'react'
+import { useState, useMemo, useRef, useCallback } from 'react'
 import { applyPatch } from 'fast-json-patch'
 import useWebSocket, { ReadyState } from 'react-use-websocket';
 
@@ -450,6 +450,104 @@ export function useConnectionsStream(baseUrl?: string) {
 
   return {
     state,
+    readyState,
+    isConnected: readyState === ReadyState.OPEN,
+  };
+}
+
+interface SpanInfo {
+  addr: string;
+  name: string;
+  self?: string;
+}
+
+export interface LogContext {
+  dest_socket_addr?: string;
+  src_socket_addr?: string;
+  dest_domain?: string;
+  net_list?: string[];
+  [key: string]: unknown;
+}
+
+export interface LogFields {
+  message?: string;
+  ctx?: string;
+  parsedCtx?: LogContext;
+  span?: SpanInfo;
+  spans?: SpanInfo[];
+  [key: string]: unknown;
+}
+
+export interface LogEntry {
+  timestamp: string;
+  level: string;
+  message?: string;
+  target?: string;
+  fields: LogFields;
+  [key: string]: unknown;
+}
+
+// Add new logs stream hook
+function formatLogContext(ctx: string): LogContext {
+  try {
+    return JSON.parse(ctx);
+  } catch {
+    return {};
+  }
+}
+
+export function useLogsStream(baseUrl?: string) {
+  const [state, setState] = useState<LogEntry[]>([]);
+  const [isPaused, setIsPaused] = useState(false);
+  const lastState = useRef<LogEntry[]>([]);
+
+  const wsUrl = useMemo(() => {
+    const url = new URL('/api/stream/logs', baseUrl || window.location.origin);
+    url.protocol = url.protocol.replace('http', 'ws');
+    return url.toString();
+  }, [baseUrl]);
+
+  const { readyState } = useWebSocket(wsUrl, {
+    shouldReconnect: () => true,
+    reconnectAttempts: 10,
+    reconnectInterval: 3000,
+    retryOnError: true,
+    onMessage: (event) => {
+      if (isPaused) return;
+
+      try {
+        const log = JSON.parse(event.data as string) as LogEntry;
+        // 预处理 ctx 字段
+        if (log.fields?.ctx) {
+          log.fields.parsedCtx = formatLogContext(log.fields.ctx);
+        }
+        const newState = [...(lastState.current || []), log];
+        // Keep only last 1000 logs to prevent memory issues
+        if (newState.length > 1000) {
+          newState.shift();
+        }
+        setState(newState);
+        lastState.current = newState;
+      } catch (e) {
+        console.error('Failed to parse log message:', e);
+      }
+    },
+  });
+
+  const togglePause = useCallback(() => {
+    setIsPaused(prev => !prev);
+  }, []);
+
+  const clearLogs = useCallback(() => {
+    setState([]);
+    lastState.current = [];
+  }, []);
+
+  return {
+    logs: state,
+    isPaused,
+    togglePause,
+    clearLogs,
     readyState,
     isConnected: readyState === ReadyState.OPEN,
   };

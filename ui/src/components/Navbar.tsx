@@ -6,7 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Settings, AlertCircle, Loader2, Activity, Home, Menu } from "lucide-react";
+import { Settings, AlertCircle, Loader2, Activity, Home, Menu, ScrollText } from "lucide-react";
 import { NavLink } from "react-router";
 import { useInstanceStatuses } from "@/hooks/use-instance-statuses";
 import { cn } from "@/lib/utils";
@@ -60,6 +60,15 @@ export function Navbar() {
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
                   <NavLink
+                    to="/logs"
+                    className="w-full flex items-center gap-2"
+                  >
+                    <ScrollText className="h-4 w-4" />
+                    日志管理
+                  </NavLink>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <NavLink
                     to="/settings"
                     className="w-full flex items-center gap-2"
                   >
@@ -104,6 +113,18 @@ export function Navbar() {
               >
                 <Activity className="h-4 w-4" />
                 连接管理
+              </NavLink>
+              <NavLink
+                to="/logs"
+                className={({ isActive }) => cn(
+                  "flex items-center gap-2 px-2 py-1 rounded-md transition-colors",
+                  isActive
+                    ? "text-primary font-medium"
+                    : "text-foreground/70 hover:text-foreground"
+                )}
+              >
+                <ScrollText className="h-4 w-4" />
+                日志管理
               </NavLink>
             </div>
           )}
