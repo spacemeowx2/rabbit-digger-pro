@@ -6,6 +6,8 @@ import { Badge } from '@/components/ui/badge';
 import { Search, Play, Pause, Trash2, AlertCircle } from 'lucide-react';
 import { useLogsStream, LogContext } from '@/api/v1';
 import { useInstance } from '@/contexts/instance';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import debounce from 'lodash/debounce';
 import clsx from 'clsx';
 
 // 日志级别颜色映射（全部转为小写处理）
@@ -57,6 +59,11 @@ export const LogsPage = () => {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
 
+  // 使用防抖来处理搜索，避免频繁过滤
+  const debouncedSetSearchQuery = debounce((value: string) => {
+    setSearchQuery(value);
+  }, 300);
+
   // 监听滚动事件
   const handleScroll = () => {
     const scrollArea = scrollAreaRef.current;
@@ -74,22 +81,44 @@ export const LogsPage = () => {
       const scrollArea = scrollAreaRef.current;
       scrollArea.scrollTop = scrollArea.scrollHeight;
     }
-  }, [logs, shouldAutoScroll, isPaused]);
+  }, [logs.length, shouldAutoScroll, isPaused]);
 
   const filteredLogs = useMemo(() => {
     if (!searchQuery) return logs;
 
     const searchLower = searchQuery.toLowerCase();
     return logs.filter(log => {
-      const fieldsStr = log.fields?.ctx ? JSON.stringify(log.fields) : '';
-      return (
-        log.message?.toLowerCase().includes(searchLower) ||
-        log.level?.toLowerCase().includes(searchLower) ||
-        log.target?.toLowerCase().includes(searchLower) ||
-        fieldsStr.toLowerCase().includes(searchLower)
-      );
+      // 避免不必要的 JSON.stringify
+      const basicMatch =
+        (log.message?.toLowerCase().includes(searchLower) ||
+          log.level?.toLowerCase().includes(searchLower) ||
+          log.target?.toLowerCase().includes(searchLower));
+
+      if (basicMatch) return true;
+
+      // 只在必要时检查 fields
+      if (log.fields) {
+        const fieldsMatch = Object.entries(log.fields).some(([, value]) => {
+          if (typeof value === 'string') {
+            return value.toLowerCase().includes(searchLower);
+          }
+          return false;
+        });
+        return fieldsMatch;
+      }
+
+      return false;
     });
   }, [logs, searchQuery]);
+
+  const parentRef = useRef<HTMLDivElement>(null);
+
+  const rowVirtualizer = useVirtualizer({
+    count: filteredLogs.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 100, // 预估每行高度
+    overscan: 5, // 预加载的行数
+  });
 
   const formatTime = (timestamp: string) => {
     try {
@@ -151,65 +180,82 @@ export const LogsPage = () => {
             <Input
               placeholder="搜索日志..."
               className="pl-8 bg-white border-gray-300"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => debouncedSetSearchQuery(e.target.value)}
             />
           </div>
         </CardHeader>
         <CardContent className="p-0 flex-1 overflow-hidden">
           <div
-            ref={scrollAreaRef}
+            ref={parentRef}
             className="h-full overflow-auto"
             onScroll={handleScroll}
           >
-            <div className="p-4 space-y-3">
-              {filteredLogs.map((log, index) => (
-                <div
-                  key={index}
-                  className={clsx(
-                    'text-sm rounded-lg p-2 transition-colors',
-                    log.level?.toLowerCase() === 'error' && 'bg-red-50',
-                    (log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning') && 'bg-amber-50',
-                  )}
-                >
-                  <div className="flex items-start gap-2">
-                    <span className="text-gray-500 shrink-0 font-mono">
-                      {formatTime(log.timestamp)}
-                    </span>
-                    <Badge
-                      variant="outline"
-                      className={LOG_LEVEL_COLORS[log.level?.toLowerCase()] || LOG_LEVEL_COLORS.trace}
-                    >
-                      {log.level?.toLowerCase() === 'error' && <AlertCircle className="h-3 w-3 mr-1" />}
-                      {log.level}
-                    </Badge>
-                    {log.target && (
-                      <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
-                        {log.target}
-                      </Badge>
+            <div
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                width: '100%',
+                position: 'relative',
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const log = filteredLogs[virtualRow.index];
+                return (
+                  <div
+                    key={virtualRow.index}
+                    data-index={virtualRow.index}
+                    ref={rowVirtualizer.measureElement}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    className={clsx(
+                      'p-4',
+                      log.level?.toLowerCase() === 'error' && 'bg-red-50',
+                      (log.level?.toLowerCase() === 'warn' || log.level?.toLowerCase() === 'warning') && 'bg-amber-50',
                     )}
-                  </div>
-
-                  <div className="mt-1 text-gray-700 font-medium pl-[84px]">
-                    {log.fields?.message || log.message}
-                  </div>
-
-                  {log.fields?.parsedCtx && (
-                    <div className="pl-[84px]">
-                      <ConnectionDetails ctx={log.fields.parsedCtx} />
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-gray-500 shrink-0 font-mono">
+                        {formatTime(log.timestamp)}
+                      </span>
+                      <Badge
+                        variant="outline"
+                        className={LOG_LEVEL_COLORS[log.level?.toLowerCase()] || LOG_LEVEL_COLORS.trace}
+                      >
+                        {log.level?.toLowerCase() === 'error' && <AlertCircle className="h-3 w-3 mr-1" />}
+                        {log.level}
+                      </Badge>
+                      {log.target && (
+                        <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
+                          {log.target}
+                        </Badge>
+                      )}
                     </div>
-                  )}
 
-                  {/* 显示其他字段信息 */}
-                  {log.fields && Object.entries(log.fields)
-                    .filter(([key]) => !['message', 'ctx', 'parsedCtx'].includes(key))
-                    .map(([key, value]) => (
-                      <div key={key} className="pl-[84px] mt-1 text-xs text-gray-500">
-                        <span className="font-medium">{key}:</span> {JSON.stringify(value)}
+                    <div className="mt-1 text-gray-700 font-medium pl-[84px]">
+                      {log.fields?.message || log.message}
+                    </div>
+
+                    {log.fields?.parsedCtx && (
+                      <div className="pl-[84px]">
+                        <ConnectionDetails ctx={log.fields.parsedCtx} />
                       </div>
-                    ))}
-                </div>
-              ))}
+                    )}
+
+                    {/* 显示其他字段信息 */}
+                    {log.fields && Object.entries(log.fields)
+                      .filter(([key]) => !['message', 'ctx', 'parsedCtx'].includes(key))
+                      .map(([key, value]) => (
+                        <div key={key} className="pl-[84px] mt-1 text-xs text-gray-500">
+                          <span className="font-medium">{key}:</span> {JSON.stringify(value)}
+                        </div>
+                      ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </CardContent>
