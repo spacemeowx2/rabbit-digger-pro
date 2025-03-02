@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { isSelectNet, SelectNet } from '@/api/rdp';
 import { useInstance } from '@/contexts/instance';
 import { cn } from '@/lib/utils';
+import { clsx } from 'clsx';
 import pLimit from 'p-limit';
 import { useLocalStorage } from '@/hooks/use-local-storage';
 
@@ -69,10 +70,14 @@ const SelectNetItem: React.FC<SelectNetItemProps> = ({
               }
             }}
           >
-            <Timer className={`h-4 w-4 ${net.list?.some(item => testingStates[item]) ? 'animate-spin' : ''}`} />
+            <Timer className={clsx("h-4 w-4", {
+              "animate-spin": net.list?.some(item => testingStates[item])
+            })} />
           </Button>
           <ChevronDown
-            className={`h-4 w-4 transition-transform duration-200 ${isOpen ? 'transform rotate-180' : ''}`}
+            className={clsx("h-4 w-4 transition-transform duration-200", {
+              "transform rotate-180": isOpen
+            })}
           />
         </div>
       </CollapsibleTrigger>
@@ -90,7 +95,7 @@ const SelectNetItem: React.FC<SelectNetItemProps> = ({
             >
               {item}
               {item in latencyResults && (
-                <span className={cn('ml-2 text-xs', colorClass)}>
+                <span className={cn("ml-2 text-xs", colorClass)}>
                   {latencyText}
                 </span>
               )}
