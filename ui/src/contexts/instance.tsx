@@ -1,5 +1,7 @@
 import { createContext, useContext } from "react"
 
+const STORAGE_KEY = "rdp-instances"
+
 // Types
 export interface RDPInstance {
   id: string
@@ -54,4 +56,31 @@ export function useInstance() {
     throw new Error("useInstance must be used within an InstanceProvider")
   }
   return context
+}
+
+export function saveInstances(instances: RDPInstance[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(instances))
+  } catch (error) {
+    console.error("Failed to save instances:", error)
+  }
+}
+
+export function loadInstances(): RDPInstance[] {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      return JSON.parse(stored)
+    }
+  } catch (error) {
+    console.error("Failed to load instances:", error)
+  }
+
+  // 如果没有存储的实例或出错，返回默认实例
+  return [{
+    id: "local",
+    name: "本地实例",
+    url: window.location.origin,
+    isActive: true
+  }]
 }

@@ -1,6 +1,5 @@
 import { ReactNode, useState, useEffect } from "react"
-import { loadInstances, saveInstances } from "@/utils/storage"
-import { InstanceContext, RDPInstance } from "./instance"
+import { InstanceContext, RDPInstance, loadInstances, saveInstances } from "./instance"
 
 export function InstanceProvider({ children }: { children: ReactNode }) {
   // 从本地存储加载实例
@@ -18,7 +17,16 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
   // 更新实例时同时更新持久化存储
   const handleSetInstances = (newInstances: RDPInstance[]) => {
     setInstances(newInstances)
-    saveInstances(newInstances)
+  }
+
+  // 更新当前实例时同时更新 isActive 状态并保存
+  const handleSetCurrentInstance = (instance: RDPInstance) => {
+    const updatedInstances = instances.map(item => ({
+      ...item,
+      isActive: item.id === instance.id
+    }))
+    setInstances(updatedInstances)
+    setCurrentInstance(instance)
   }
 
   return (
@@ -27,7 +35,7 @@ export function InstanceProvider({ children }: { children: ReactNode }) {
         instances,
         setInstances: handleSetInstances,
         currentInstance,
-        setCurrentInstance
+        setCurrentInstance: handleSetCurrentInstance
       }}
     >
       {children}

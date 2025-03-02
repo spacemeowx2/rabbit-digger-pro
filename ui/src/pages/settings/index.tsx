@@ -1,4 +1,4 @@
-import { InstancesPanel } from "@/pages/main/instances"
+import { InstancesPanel } from "@/pages/settings/instances"
 
 export const SettingsPage = () => {
   return (
