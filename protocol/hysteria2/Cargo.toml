@@ -1,0 +1,21 @@
+[package]
+name = "hysteria2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rd-interface = { path = "../../rd-interface/", version = "0.4" }
+rd-std = { path = "../../rd-std/", version = "0.1" }
+quinn = "0.10"
+h3 = "0.0.3"
+h3-quinn = "0.0.4"
+bytes = "1"
+futures = "0.3"
+tokio = { version = "1", features = ["rt", "macros", "io-util"] }
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+blake2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net"] }
