@@ -28,9 +28,8 @@ export function Navbar() {
   const isMobile = useIsMobile();
 
   return (
-    <nav className="border-b">
-      <div className="px-4 h-14 flex items-center justify-between">
-        <div className="flex items-center gap-6">
+    <nav className="border-b bg-white/95 dark:bg-slate-950/95 backdrop-blur-md border-slate-200/50 dark:border-slate-800/50 shadow-sm">
+      <div className="px-4 h-16 flex items-center justify-between max-w-7xl mx-auto">
           {/* 移动端汉堡菜单靠左对齐 */}
           {isMobile && (
             <DropdownMenu>
@@ -83,20 +82,22 @@ export function Navbar() {
           {/* 只在非移动端显示标题 */}
           {!isMobile && (
             <NavLink to="/" className="hover:opacity-80 transition-opacity">
-              <h1 className="font-medium">Rabbit Digger Pro</h1>
+              <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                Rabbit Digger Pro
+              </h1>
             </NavLink>
           )}
 
           {/* 桌面导航 */}
           {!isMobile && (
             <div className="flex items-center gap-6">
-              <NavLink
+<NavLink
                 to="/"
                 className={({ isActive }) => cn(
-                  "flex items-center gap-2 px-2 py-1 rounded-md transition-colors",
+                  "flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200",
                   isActive
-                    ? "text-primary font-medium"
-                    : "text-foreground/70 hover:text-foreground"
+                    ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-md shadow-blue-500/25"
+                    : "text-foreground/70 hover:text-foreground hover:bg-slate-100 dark:hover:bg-slate-800"
                 )}
               >
                 <Home className="h-4 w-4" />
@@ -105,10 +106,10 @@ export function Navbar() {
               <NavLink
                 to="/connection"
                 className={({ isActive }) => cn(
-                  "flex items-center gap-2 px-2 py-1 rounded-md transition-colors",
+                  "flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200",
                   isActive
-                    ? "text-primary font-medium"
-                    : "text-foreground/70 hover:text-foreground"
+                    ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-md shadow-blue-500/25"
+                    : "text-foreground/70 hover:text-foreground hover:bg-slate-100 dark:hover:bg-slate-800"
                 )}
               >
                 <Activity className="h-4 w-4" />
@@ -117,10 +118,10 @@ export function Navbar() {
               <NavLink
                 to="/logs"
                 className={({ isActive }) => cn(
-                  "flex items-center gap-2 px-2 py-1 rounded-md transition-colors",
+                  "flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200",
                   isActive
-                    ? "text-primary font-medium"
-                    : "text-foreground/70 hover:text-foreground"
+                    ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-md shadow-blue-500/25"
+                    : "text-foreground/70 hover:text-foreground hover:bg-slate-100 dark:hover:bg-slate-800"
                 )}
               >
                 <ScrollText className="h-4 w-4" />
@@ -141,7 +142,7 @@ export function Navbar() {
                 }
               }}
             >
-              <SelectTrigger className={cn(isMobile ? "w-36" : "w-[200px]")}>
+              <SelectTrigger className={cn(isMobile ? "w-36" : "w-[200px] bg-white/50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700")}>
                 <SelectValue placeholder="选择实例" />
               </SelectTrigger>
               <SelectContent>
@@ -178,10 +179,10 @@ export function Navbar() {
             <NavLink
               to="/settings"
               className={({ isActive }) => cn(
-                "flex items-center gap-2 px-2 py-1 rounded-md transition-colors",
+                "flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200",
                 isActive
-                  ? "text-primary font-medium"
-                  : "text-foreground/70 hover:text-foreground"
+                  ? "bg-gradient-to-r from-blue-500 to-purple-500 text-white shadow-md shadow-blue-500/25"
+                  : "text-foreground/70 hover:text-foreground hover:bg-slate-100 dark:hover:bg-slate-800"
               )}
             >
               <Settings className="h-4 w-4" />

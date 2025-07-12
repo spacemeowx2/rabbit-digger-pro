@@ -53,15 +53,23 @@ const SelectNetItem: React.FC<SelectNetItemProps> = ({
     <Collapsible
       open={isOpen}
       onOpenChange={onToggleOpen}
-      className="border rounded-lg p-2"
+      className="border border-slate-200 dark:border-slate-700 rounded-xl bg-white/50 dark:bg-slate-800/50 backdrop-blur-sm shadow-sm hover:shadow-md transition-all duration-300"
     >
-      <CollapsibleTrigger className="flex items-center justify-between w-full p-2">
-        <span className="text-lg font-medium">{netName}</span>
+      <CollapsibleTrigger className="flex items-center justify-between w-full p-4 hover:bg-slate-50/50 dark:hover:bg-slate-800/50 rounded-xl transition-all duration-200">
+        <div className="flex items-center gap-3">
+          <div className="w-3 h-3 rounded-full bg-gradient-to-r from-blue-500 to-purple-500" />
+          <span className="text-lg font-semibold text-slate-800 dark:text-slate-200">{netName}</span>
+          {net.selected && (
+            <span className="text-xs px-2 py-1 bg-gradient-to-r from-blue-500 to-purple-500 text-white rounded-full">
+              {net.selected}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8"
+            className="h-9 w-9 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-all duration-200"
             disabled={net.list?.some(item => testingStates[item])}
             onClick={(e) => {
               e.preventDefault();
@@ -70,38 +78,64 @@ const SelectNetItem: React.FC<SelectNetItemProps> = ({
               }
             }}
           >
-            <Timer className={clsx("h-4 w-4", {
-              "animate-spin": net.list?.some(item => testingStates[item])
+            <Timer className={clsx("h-4 w-4 text-slate-600 dark:text-slate-400", {
+              "animate-spin text-blue-500": net.list?.some(item => testingStates[item])
             })} />
           </Button>
-          <ChevronDown
-            className={clsx("h-4 w-4 transition-transform duration-200", {
-              "transform rotate-180": isOpen
-            })}
-          />
+          <div className={clsx("h-8 w-8 flex items-center justify-center rounded-lg bg-slate-100 dark:bg-slate-800 transition-all duration-200", {
+            "bg-gradient-to-r from-blue-500 to-purple-500 text-white": isOpen
+          })}>
+            <ChevronDown
+              className={clsx("h-4 w-4 text-slate-600 dark:text-slate-400 transition-transform duration-200", {
+                "transform rotate-180 text-white": isOpen
+              })}
+            />
+          </div>
         </div>
       </CollapsibleTrigger>
-      <CollapsibleContent className="mt-2 flex flex-wrap gap-2">
-        {net.list?.map((item) => {
-          const latency = latencyResults[item]?.response;
-          const { text: latencyText, colorClass } = formatLatency(latency);
+      <CollapsibleContent className="px-4 pb-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          {net.list?.map((item) => {
+            const latency = latencyResults[item]?.response;
+            const { text: latencyText, colorClass } = formatLatency(latency);
+            const isSelected = item === net.selected;
+            const isTesting = testingStates[item];
 
-          return (
-            <Button
-              key={item}
-              variant={item === net.selected ? 'default' : 'outline'}
-              onClick={() => onSelect(item)}
-              disabled={testingStates[item]}
-            >
-              {item}
-              {item in latencyResults && (
-                <span className={cn("ml-2 text-xs", colorClass)}>
-                  {latencyText}
-                </span>
-              )}
-            </Button>
-          );
-        })}
+            return (
+              <Button
+                key={item}
+                variant={isSelected ? 'default' : 'outline'}
+                onClick={() => onSelect(item)}
+                disabled={isTesting}
+                className={cn(
+                  "h-auto py-3 px-4 text-left transition-all duration-200",
+                  isSelected && "bg-gradient-to-r from-blue-500 to-purple-500 border-0 shadow-md shadow-blue-500/25",
+                  !isSelected && "hover:bg-slate-50 dark:hover:bg-slate-800 hover:border-slate-300 dark:hover:border-slate-600",
+                  isTesting && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                <div className="flex flex-col items-start gap-1">
+                  <span className="font-medium text-sm">{item}</span>
+                  {item in latencyResults && (
+                    <div className="flex items-center gap-1">
+                      <span className={cn("text-xs font-medium", colorClass)}>
+                        {latencyText}
+                      </span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        {latencyResults[item]?.region && `• ${latencyResults[item]?.region}`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                {isTesting && (
+                  <div className="absolute top-2 right-2">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                  </div>
+                )}
+              </Button>
+            );
+          })}
+        </div>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -200,19 +234,33 @@ export const SelectNetPanel: React.FC = () => {
 
   return (
     <div className="space-y-4">
-      {selectNets.map(([netName, net]) => (
-        <SelectNetItem
-          key={netName}
-          netName={netName}
-          net={net}
-          isOpen={openStates[netName]}
-          onToggleOpen={() => toggleOpen(netName)}
-          onSelect={(selected) => handleSelect(netName, selected)}
-          testingStates={testingStates}
-          latencyResults={latencyResults}
-          onBatchSpeedTest={handleBatchSpeedTest}
-        />
-      ))}
+      {selectNets.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full flex items-center justify-center">
+            <Activity className="h-8 w-8 text-white" />
+          </div>
+          <h3 className="text-lg font-medium text-slate-800 dark:text-slate-200 mb-2">
+            暂无可用节点
+          </h3>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            请检查配置文件或添加新的代理节点
+          </p>
+        </div>
+      ) : (
+        selectNets.map(([netName, net]) => (
+          <SelectNetItem
+            key={netName}
+            netName={netName}
+            net={net}
+            isOpen={openStates[netName]}
+            onToggleOpen={() => toggleOpen(netName)}
+            onSelect={(selected) => handleSelect(netName, selected)}
+            testingStates={testingStates}
+            latencyResults={latencyResults}
+            onBatchSpeedTest={handleBatchSpeedTest}
+          />
+        ))
+      )}
     </div>
   );
 };
