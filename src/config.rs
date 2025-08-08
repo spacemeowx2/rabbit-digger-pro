@@ -126,10 +126,15 @@ impl ImportSource {
         let content = cache.get(&key).await?;
 
         if let Some(content) = content.and_then(|c| {
-            self.get_expire_duration()
-                .map(|d| SystemTime::now() < c.updated_at + d)
-                .unwrap_or(true)
-                .then_some(c.content)
+            // Only use cached content if it's not empty and not expired
+            if c.content.is_empty() {
+                None
+            } else {
+                self.get_expire_duration()
+                    .map(|d| SystemTime::now() < c.updated_at + d)
+                    .unwrap_or(true)
+                    .then_some(c.content)
+            }
         }) {
             return Ok(content);
         }
@@ -137,7 +142,6 @@ impl ImportSource {
         Ok(match self {
             ImportSource::Path(path) => read_from_path(path).await?,
             ImportSource::Poll(ImportUrl { url, .. }) => {
-                config_storage().await.set(&key, "").await?;
                 tracing::info!("Fetching {}", url);
                 let content = match retry(3, || fetch(url)).await {
                     Ok(c) => c,
@@ -148,7 +152,10 @@ impl ImportSource {
                     }
                 };
                 tracing::info!("Done");
-                cache.set(&key, &content).await?;
+                // Only cache non-empty content to avoid caching error responses
+                if !content.is_empty() {
+                    cache.set(&key, &content).await?;
+                }
                 content
             }
             ImportSource::Storage(ImportStorage { folder, key }) => {
