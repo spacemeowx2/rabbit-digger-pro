@@ -141,3 +141,26 @@ impl<S> PushingStream<S> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tls_connector_new_with_verify() {
+        let config = TlsConnectorConfig {
+            skip_cert_verify: false,
+        };
+        let result = TlsConnector::new(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tls_connector_new_skip_verify() {
+        let config = TlsConnectorConfig {
+            skip_cert_verify: true,
+        };
+        let result = TlsConnector::new(config);
+        assert!(result.is_ok());
+    }
+}

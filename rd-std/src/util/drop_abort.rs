@@ -42,3 +42,50 @@ impl<T> Future for DropAbort<T> {
         Pin::new(&mut self.0).poll(cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::sleep;
+
+    #[tokio::test]
+    async fn test_drop_abort() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+
+        let handle = tokio::spawn(async move {
+            loop {
+                if flag_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+            "completed"
+        });
+
+        {
+            let drop_abort = DropAbort::new(handle);
+            sleep(Duration::from_millis(50)).await;
+            drop(drop_abort);
+        }
+
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    #[tokio::test]
+    async fn test_drop_abort_deref() {
+        let handle = tokio::spawn(async { "test" });
+        let drop_abort = DropAbort::new(handle);
+        let _ = drop_abort.0;
+    }
+
+    #[tokio::test]
+    async fn test_drop_abort_deref_mut() {
+        let handle = tokio::spawn(async { "test" });
+        let mut drop_abort = DropAbort::new(handle);
+        let _ = drop_abort.0;
+    }
+}

@@ -132,3 +132,20 @@ impl Inner {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_config_manager_new() {
+        let result = ConfigManager::new().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_config_manager_clone() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let _ = mgr.clone();
+    }
+}

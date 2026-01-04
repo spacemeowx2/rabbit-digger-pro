@@ -81,4 +81,15 @@ mod tests {
         spawn_echo_server_udp(&parent_net, "127.0.0.1:26666").await;
         assert_echo_udp(&net, "127.0.0.1:26666").await;
     }
+
+    #[test]
+    fn test_alias_builder() {
+        use rd_interface::IntoDyn;
+
+        let net = TestNet::new().into_dyn();
+        let result = AliasNet::build(AliasNetConfig {
+            net: rd_interface::config::NetRef::new_with_value("test".into(), net),
+        });
+        assert!(result.is_ok());
+    }
 }

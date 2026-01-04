@@ -73,3 +73,40 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_config() {
+        let yaml = r#"
+net:
+  test_net:
+    type: direct
+"#;
+        let result = deserialize_config(yaml);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_deserialize_config_invalid() {
+        let invalid_yaml = "invalid: yaml: [";
+        let result = deserialize_config(invalid_yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_api_server_default() {
+        let api_server = ApiServer::default();
+        assert!(api_server.bind.is_none());
+        assert!(api_server.access_token.is_none());
+        assert!(api_server.web_ui.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_app_new() {
+        let result = App::new().await;
+        assert!(result.is_ok());
+    }
+}

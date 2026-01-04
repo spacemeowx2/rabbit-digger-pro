@@ -42,3 +42,25 @@ impl<T: AsRawFd> OriginAddrExt for T {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_origin_addr_ext_for_types() {
+        use std::os::unix::io::AsRawFd;
+
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let _ = file.origin_addr();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::net::UnixStream;
+            let stream = UnixStream::connect("/tmp/does_not_exist");
+            if let Ok(s) = stream {
+                let _ = s.origin_addr();
+            }
+        }
+    }
+}

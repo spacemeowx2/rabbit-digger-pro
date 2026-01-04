@@ -57,3 +57,31 @@ impl IntoDyn<BoxImporter> for Rhai {
         Box::new(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rhai_builder() {
+        let result = Rhai::build(Rhai {});
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_rhai_into_dyn() {
+        let rhai = Rhai::build(Rhai {}).unwrap();
+        let _ = rhai.into_dyn();
+    }
+
+    #[tokio::test]
+    async fn test_rhai_process_error() {
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let mut config = rabbit_digger::Config::default();
+        let invalid_script = "this is not valid rhai";
+
+        let mut rhai = Rhai::build(Rhai {}).unwrap();
+        let result = rhai.process(&mut config, invalid_script, &cache).await;
+        assert!(result.is_err());
+    }
+}

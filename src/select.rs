@@ -93,4 +93,24 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_select_new_empty_list() {
+        let net = NetRef::new_with_value("test".into(), TestNet::new().into_dyn());
+        let result = SelectNet::new(SelectNetConfig {
+            selected: net.clone(),
+            list: vec![],
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_select_new_valid() {
+        let net = NetRef::new_with_value("test".into(), TestNet::new().into_dyn());
+        let result = SelectNet::new(SelectNetConfig {
+            selected: net.clone(),
+            list: vec![net],
+        });
+        assert!(result.is_ok());
+    }
 }

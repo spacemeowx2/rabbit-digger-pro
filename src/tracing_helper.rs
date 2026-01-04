@@ -189,3 +189,46 @@ impl<'a> io::Write for WriteAdaptor<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write_adaptor_write_valid_utf8() {
+        let mut buf = String::new();
+        let mut adaptor = WriteAdaptor::new(&mut buf);
+
+        let result = adaptor.write(b"hello world");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 11);
+        assert_eq!(buf, "hello world");
+    }
+
+    #[test]
+    fn test_write_adaptor_write_invalid_utf8() {
+        let mut buf = String::new();
+        let mut adaptor = WriteAdaptor::new(&mut buf);
+
+        let invalid_utf8: &[u8] = &[0xFF, 0xFE];
+        let result = adaptor.write(invalid_utf8);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_adaptor_flush() {
+        let mut buf = String::new();
+        let mut adaptor = WriteAdaptor::new(&mut buf);
+
+        let result = adaptor.flush();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_adaptor_new() {
+        let mut buf = String::new();
+        let adaptor = WriteAdaptor::new(&mut buf);
+
+        let _ = adaptor;
+    }
+}

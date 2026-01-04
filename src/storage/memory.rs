@@ -61,3 +61,61 @@ impl Storage for MemoryCache {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[tokio::test]
+    async fn test_memory_cache_set_get() {
+        let cache = MemoryCache::new().await.unwrap();
+        cache.set("key1", "value1").await.unwrap();
+        let item = cache.get("key1").await.unwrap().unwrap();
+        assert_eq!(item.content, "value1");
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_get_nonexistent() {
+        let cache = MemoryCache::new().await.unwrap();
+        let result = cache.get("nonexistent").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_remove() {
+        let cache = MemoryCache::new().await.unwrap();
+        cache.set("key1", "value1").await.unwrap();
+        assert!(cache.get("key1").await.unwrap().is_some());
+        cache.remove("key1").await.unwrap();
+        assert!(cache.get("key1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_keys() {
+        let cache = MemoryCache::new().await.unwrap();
+        cache.set("key1", "value1").await.unwrap();
+        cache.set("key2", "value2").await.unwrap();
+        let keys = cache.keys().await.unwrap();
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_clear() {
+        let cache = MemoryCache::new().await.unwrap();
+        cache.set("key1", "value1").await.unwrap();
+        cache.set("key2", "value2").await.unwrap();
+        cache.clear().await.unwrap();
+        assert_eq!(cache.keys().await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_memory_cache_get_updated_at() {
+        let cache = MemoryCache::new().await.unwrap();
+        let before = SystemTime::now();
+        cache.set("key1", "value1").await.unwrap();
+        let after = SystemTime::now();
+        let updated_at = cache.get_updated_at("key1").await.unwrap().unwrap();
+        assert!(updated_at >= before && updated_at <= after);
+    }
+}

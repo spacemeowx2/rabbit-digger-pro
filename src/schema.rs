@@ -195,3 +195,66 @@ pub async fn generate_schema() -> Result<RootSchema> {
 
     Ok(root)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_schema() {
+        let schema = SchemaObject::default();
+        let result = record(schema.into());
+        assert!(matches!(result, Schema::Object(_)));
+    }
+
+    #[test]
+    fn test_array_schema() {
+        let schema = SchemaObject::default();
+        let result = array(schema.into());
+        assert!(matches!(result, Schema::Object(_)));
+    }
+
+    #[test]
+    fn test_any_of_schema() {
+        let schemas = vec![SchemaObject::default()];
+        let result = any_of_schema(schemas);
+        assert!(matches!(result, Schema::Object(_)));
+    }
+
+    #[test]
+    fn test_append_type() {
+        let mut schema = RootSchema::default();
+        schema.schema = SchemaObject::default();
+        let mut result = append_type(&schema, "test_type");
+        assert!(result
+            .schema
+            .object()
+            .required
+            .contains(&"type".to_string()));
+    }
+
+    #[test]
+    fn test_prefix_visitor_prefix() {
+        let visitor = PrefixVisitor("prefix_".to_string());
+        assert_eq!(visitor.prefix("Net"), "Net");
+        assert_eq!(visitor.prefix("Other"), "prefix_Other");
+    }
+
+    #[tokio::test]
+    async fn test_write_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schema.json");
+        let result = write_schema(&path).await;
+        assert!(result.is_ok());
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_generate_schema() {
+        let result = generate_schema().await;
+        assert!(result.is_ok());
+        let schema = result.unwrap();
+        assert!(schema.definitions.contains_key("Net"));
+        assert!(schema.definitions.contains_key("Server"));
+    }
+}

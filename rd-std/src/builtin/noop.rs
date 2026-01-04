@@ -12,3 +12,15 @@ impl Builder<Net> for NoopNet {
         Ok(NotImplementedNet)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_noop_builder() {
+        let result = NoopNet::build(EmptyConfig::default());
+        assert!(result.is_ok());
+        assert!(matches!(result.unwrap(), NotImplementedNet));
+    }
+}

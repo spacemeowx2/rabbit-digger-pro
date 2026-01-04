@@ -87,6 +87,7 @@ mimalloc = { version = "0.1", optional = true }
 
 [dev-dependencies]
 rusty-hook = "0.11.0"
+tempfile = "3.3"
 
 [features]
 default = ["ss", "trojan", "rpc", "obfs", "api_server", "rhai", "raw"]

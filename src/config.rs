@@ -268,3 +268,83 @@ pub struct ConfigExt {
     #[serde(default, with = "serde_yaml::with::singleton_map_recursive")]
     import: Vec<Import>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_import_source_new_path() {
+        let path = PathBuf::from("/test/path");
+        let source = ImportSource::new_path(path.clone());
+        assert!(matches!(source, ImportSource::Path(p) if p == path));
+    }
+
+    #[test]
+    fn test_import_source_new_poll() {
+        let url = "https://example.com".to_string();
+        let interval = Some(60);
+        let source = ImportSource::new_poll(url.clone(), interval);
+        assert!(matches!(source, ImportSource::Poll(p) if p.url == url && p.interval == interval));
+    }
+
+    #[test]
+    fn test_import_source_cache_key() {
+        let path_source = ImportSource::Path(PathBuf::from("/test"));
+        assert!(path_source.cache_key().contains("path:"));
+
+        let poll_source = ImportSource::Poll(ImportUrl {
+            url: "https://example.com".to_string(),
+            interval: None,
+        });
+        assert_eq!(poll_source.cache_key(), "poll:https://example.com");
+
+        let storage_source = ImportSource::Storage(ImportStorage {
+            folder: "test".to_string(),
+            key: "key1".to_string(),
+        });
+        assert_eq!(storage_source.cache_key(), "storage:test:key1");
+
+        let text_source = ImportSource::Text("test".to_string());
+        assert_eq!(text_source.cache_key(), "text");
+    }
+
+    #[test]
+    fn test_import_source_get_expire_duration() {
+        let path_source = ImportSource::Path(PathBuf::from("/test"));
+        assert!(path_source.get_expire_duration().is_none());
+
+        let poll_source = ImportSource::Poll(ImportUrl {
+            url: "https://example.com".to_string(),
+            interval: Some(60),
+        });
+        assert_eq!(
+            poll_source.get_expire_duration(),
+            Some(Duration::from_secs(60))
+        );
+
+        let poll_source_none = ImportSource::Poll(ImportUrl {
+            url: "https://example.com".to_string(),
+            interval: None,
+        });
+        assert!(poll_source_none.get_expire_duration().is_none());
+
+        let text_source = ImportSource::Text("test".to_string());
+        assert!(text_source.get_expire_duration().is_none());
+    }
+
+    #[test]
+    fn test_config_import_serialize() {
+        let config_import = ConfigImport { import: vec![] };
+        let yaml = serde_yaml::to_string(&config_import);
+        assert!(yaml.is_ok());
+    }
+
+    #[test]
+    fn test_config_import_deserialize() {
+        let yaml = "import: []";
+        let result = serde_yaml::from_str::<ConfigImport>(yaml);
+        assert!(result.is_ok());
+    }
+}

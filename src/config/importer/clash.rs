@@ -574,4 +574,47 @@ mod tests {
 
         assert_eq!(config_string, wanted_content);
     }
+
+    #[test]
+    fn test_clash_builder() {
+        let result = Clash::build(Clash {
+            rule_name: Some("test".to_string()),
+            prefix: Some("prefix_".to_string()),
+            direct: Some("direct".to_string()),
+            reject: Some("reject".to_string()),
+            disable_proxy_group: false,
+            select: Some("select_".to_string()),
+            name_map: std::collections::BTreeMap::new(),
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clash_builder_default() {
+        let result = Clash::build(Clash {
+            rule_name: None,
+            prefix: None,
+            direct: None,
+            reject: None,
+            disable_proxy_group: false,
+            select: None,
+            name_map: std::collections::BTreeMap::new(),
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clash_into_dyn() {
+        let clash = Clash::build(Clash {
+            rule_name: None,
+            prefix: None,
+            direct: None,
+            reject: None,
+            disable_proxy_group: false,
+            select: None,
+            name_map: std::collections::BTreeMap::new(),
+        })
+        .unwrap();
+        let _ = clash.into_dyn();
+    }
 }
