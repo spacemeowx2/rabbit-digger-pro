@@ -2,8 +2,7 @@ use std::net::SocketAddr;
 
 use rd_derive::rd_config;
 use rd_interface::{
-    async_trait, config::NetRef, prelude::*, registry::Builder, Address, Error, INet, IntoDyn, Net,
-    Result,
+    async_trait, config::NetRef, prelude::*, registry::Builder, Address, INet, IntoDyn, Net, Result,
 };
 use trust_dns_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
@@ -34,7 +33,6 @@ pub struct DnsConfig {
 }
 
 pub struct DnsNet {
-    net: Net,
     resolver: AsyncResolver<GenericConnector<RDRuntime>>,
 }
 
@@ -95,7 +93,7 @@ impl Builder<Net> for DnsNet {
             GenericConnector::new(RDRuntime { net: net.clone() }),
         );
 
-        Ok(Self { resolver, net })
+        Ok(Self { resolver })
     }
 }
 

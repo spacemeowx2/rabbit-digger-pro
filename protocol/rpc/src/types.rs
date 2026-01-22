@@ -19,6 +19,7 @@ pub enum RpcValue {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(dead_code)]
 pub enum Error {
     ObjectNotFound,
 }

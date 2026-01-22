@@ -7,7 +7,7 @@ use rd_interface::{
 };
 use shadowsocks::{
     context::SharedContext,
-    crypto::{CipherCategory, CipherKind},
+    crypto::CipherKind,
     relay::{socks5::Address as SSAddress, tcprelay::crypto_io},
     ProxyClientStream, ServerConfig,
 };
@@ -233,28 +233,6 @@ impl IUdpSocket for WrapSSUdp {
 pub struct CryptoStream<S>(crypto_io::CryptoStream<S>, SharedContext);
 
 impl<S> CryptoStream<S> {
-    pub fn from_stream(context: SharedContext, stream: S, method: CipherKind, key: &[u8]) -> Self {
-        Self::from_client_stream(context, stream, method, key)
-    }
-
-    pub fn from_client_stream(
-        context: SharedContext,
-        stream: S,
-        method: CipherKind,
-        key: &[u8],
-    ) -> Self {
-        CryptoStream(
-            crypto_io::CryptoStream::<S>::from_stream(
-                &context,
-                stream,
-                crypto_io::StreamType::Client,
-                method,
-                key,
-            ),
-            context,
-        )
-    }
-
     pub fn from_server_stream(
         context: SharedContext,
         stream: S,

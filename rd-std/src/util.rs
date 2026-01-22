@@ -43,6 +43,7 @@ pub fn is_reserved(addr: IpAddr) -> bool {
         IpAddr::V4(a) => {
             let [a0, a1, ..] = a.octets();
             a.is_unspecified()
+                || a0 == 0 // 0.0.0.0/8 ("this host on this network")
                 || a.is_loopback()
                 || a.is_private()
                 || (a0 == 169 && a1 == 254) // 169.254.0.0/16

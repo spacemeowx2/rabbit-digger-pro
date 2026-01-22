@@ -48,7 +48,7 @@ impl CompactVecString {
         self.underlying.shrink_to_fit();
         self.index.shrink_to_fit();
     }
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<'_> {
         Iter {
             inner: self,
             index: 0,

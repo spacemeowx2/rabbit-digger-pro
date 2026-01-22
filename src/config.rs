@@ -237,12 +237,6 @@ pub struct Import {
 impl Import {}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub(crate) struct ConfigImport {
-    #[serde(default)]
-    import: Vec<Import>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConfigExt {
     #[serde(flatten)]
     config: Config,

@@ -2,6 +2,7 @@ use std::{net::Ipv4Addr, str::FromStr};
 
 use crate::config::{DeviceConfig, RawNetConfig, TunTap, TunTapSetup};
 use boxed::BoxedAsyncDevice;
+#[allow(unused_imports)]
 pub use interface_info::get_interface_info;
 use rd_interface::{Error, Result};
 use tokio_smoltcp::smoltcp::wire::{EthernetAddress, IpCidr};

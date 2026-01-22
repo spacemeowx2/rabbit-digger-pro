@@ -100,6 +100,7 @@ pub struct RawNetConfig {
 }
 
 pub struct TunTapSetup {
+    #[allow(dead_code)]
     pub name: Option<String>,
     pub addr: Ipv4Addr,
     pub destination_addr: IpCidr,
