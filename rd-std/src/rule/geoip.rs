@@ -4,7 +4,7 @@ use std::net::IpAddr;
 use super::config::GeoIpMatcher;
 use super::matcher::{MatchContext, Matcher, MaybeAsync};
 use flate2::read::GzDecoder;
-use maxminddb::{geoip2, MaxMindDBError};
+use maxminddb::geoip2;
 use once_cell::sync::OnceCell;
 use tar::Archive;
 
@@ -42,23 +42,23 @@ impl GeoIpMatcher {
     fn test(&self, ip: impl Into<IpAddr>) -> bool {
         let ip = ip.into();
         let reader = get_reader();
-        let result: Result<geoip2::Country, _> = reader.lookup(ip);
-        match result {
-            Ok(geoip2::Country {
-                country:
-                    Some(geoip2::country::Country {
-                        iso_code: Some(country),
+        match reader.lookup(ip) {
+            Ok(result) => {
+                let decoded = result.decode::<geoip2::Country>();
+                match decoded {
+                    Ok(Some(geoip2::Country {
+                        country:
+                            geoip2::country::Country {
+                                iso_code: Some(country),
+                                ..
+                            },
                         ..
-                    }),
-                ..
-            }) => country == self.country,
-            Err(MaxMindDBError::AddressNotFoundError(_)) => self.country.is_empty(),
+                    })) => country == self.country,
+                    Ok(Some(_)) | Ok(None) | Err(_) => self.country.is_empty(),
+                }
+            }
             Err(e) => {
                 tracing::debug!("Failed to lookup country for ip: {}, reason: {:?}", ip, e);
-                false
-            }
-            _ => {
-                // no message
                 false
             }
         }

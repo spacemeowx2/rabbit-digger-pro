@@ -6,7 +6,7 @@ use crate::{
     IntoDyn, Net, Result, Server,
 };
 pub use schemars::JsonSchema;
-use schemars::{schema::RootSchema, schema_for};
+use schemars::{schema_for, Schema};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
@@ -70,7 +70,7 @@ trait BuilderExt<ItemType>: Builder<ItemType> {
 
 pub struct Resolver<ItemType> {
     build: fn(getter: NetGetter, cfg: &mut Value) -> Result<ItemType>,
-    schema: RootSchema,
+    schema: Schema,
 }
 pub type NetResolver = Resolver<Net>;
 pub type ServerResolver = Resolver<Server>;
@@ -86,7 +86,7 @@ impl<ItemType> Resolver<ItemType> {
     pub fn build(&self, getter: NetGetter, cfg: &mut Value) -> Result<ItemType> {
         (self.build)(getter, cfg)
     }
-    pub fn schema(&self) -> &RootSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 }

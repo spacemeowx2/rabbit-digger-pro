@@ -1,11 +1,9 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::{self as rd_interface, Address, Net};
 pub use resolvable::{Resolvable, ResolvableSchema};
-use schemars::{
-    schema::{InstanceType, Metadata, SchemaObject, SubschemaValidation},
-    JsonSchema,
-};
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,28 +18,26 @@ mod single_or_vec;
 #[derive(Clone)]
 pub struct NetSchema;
 impl JsonSchema for NetSchema {
-    fn is_referenceable() -> bool {
-        false
-    }
-    fn schema_name() -> String {
-        "NetRef".into()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("NetRef")
     }
 
-    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        SchemaObject {
-            subschemas: Some(
-                SubschemaValidation {
-                    any_of: Some(vec![
-                        gen.subschema_for::<String>(),
-                        schemars::schema::Schema::new_ref("#/definitions/Net".into()),
-                    ]),
-                    ..Default::default()
-                }
-                .into(),
-            ),
-            ..Default::default()
-        }
-        .into()
+    fn json_schema(gen: &mut SchemaGenerator) -> Schema {
+        let string_schema = serde_json::to_value(gen.subschema_for::<String>())
+            .expect("schemars schema should be serializable");
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "anyOf".to_string(),
+            Value::Array(vec![
+                string_schema,
+                Value::Object(serde_json::Map::from_iter([(
+                    "$ref".to_string(),
+                    Value::String("#/definitions/Net".to_string()),
+                )])),
+            ]),
+        );
+        Schema::from(obj)
     }
 }
 
@@ -170,45 +166,34 @@ mod impl_std {
 pub struct EmptyConfig(Value);
 
 impl JsonSchema for EmptyConfig {
-    fn schema_name() -> String {
-        "EmptyConfig".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("EmptyConfig")
     }
 
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::Object.into()),
-            format: None,
-            ..Default::default()
-        }
-        .into()
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let mut obj = serde_json::Map::new();
+        obj.insert("type".to_string(), Value::String("object".to_string()));
+        Schema::from(obj)
     }
 }
 
 crate::impl_empty_config! { EmptyConfig, Value }
 
 impl JsonSchema for Address {
-    fn is_referenceable() -> bool {
-        false
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("Address")
     }
 
-    fn schema_name() -> String {
-        "Address".to_string()
-    }
-
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            format: None,
-            metadata: Some(
-                Metadata {
-                    description: Some("An address contains host and port.\nFor example: example.com:80, 1.1.1.1:53, [::1]:443".to_string()),
-                    ..Default::default()
-                }
-                .into(),
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let mut obj = serde_json::Map::new();
+        obj.insert("type".to_string(), Value::String("string".to_string()));
+        obj.insert(
+            "description".to_string(),
+            Value::String(
+                "An address contains host and port.\nFor example: example.com:80, 1.1.1.1:53, [::1]:443".to_string(),
             ),
-            ..Default::default()
-        }
-        .into()
+        );
+        Schema::from(obj)
     }
 }
 

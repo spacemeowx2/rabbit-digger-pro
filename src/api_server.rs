@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use rabbit_digger::RabbitDigger;
+use tokio::net::TcpListener;
 
 use crate::config::ConfigManager;
 
@@ -19,9 +20,13 @@ impl ApiServer {
     pub async fn run(self, bind: &str) -> Result<SocketAddr> {
         let app = self.routes().await?;
 
-        let server = axum::Server::bind(&bind.parse()?).serve(app.into_make_service());
-        let local_addr = server.local_addr();
-        tokio::spawn(server);
+        let listener = TcpListener::bind(bind).await?;
+        let local_addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, app).await {
+                tracing::error!("api server exited: {e}");
+            }
+        });
 
         Ok(local_addr)
     }

@@ -108,11 +108,11 @@ impl LocalNetConfig {
         }
 
         if let Some(ttl) = self.ttl {
-            socket.set_ttl(ttl)?;
+            socket.set_ttl_v4(ttl)?;
         }
 
         if is_tcp {
-            socket.set_nodelay(self.nodelay.unwrap_or(true))?;
+            socket.set_tcp_nodelay(self.nodelay.unwrap_or(true))?;
 
             let keepalive_duration = self.tcp_keepalive.unwrap_or(600.0);
             if keepalive_duration > 0.0 {

@@ -8,7 +8,7 @@ edition = "2021"
 rd-interface = { path = "../../rd-interface/", version = "0.4" }
 rd-std = { path = "../../rd-std/", version = "0.1" }
 # rd-interface = "0.3"
-shadowsocks = { version = "=1.13.2", default-features = false, features = [
+shadowsocks = { version = "1.24.0", default-features = false, features = [
     "stream-cipher",
     "aead-cipher-extra",
 ] }

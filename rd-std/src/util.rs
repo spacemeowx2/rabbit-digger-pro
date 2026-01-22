@@ -39,25 +39,25 @@ pub fn resolve_mapped_socket_addr(addr: SocketAddr) -> SocketAddr {
 
 /// If the given address is reserved.
 pub fn is_reserved(addr: IpAddr) -> bool {
-    use smoltcp::wire::{Ipv4Address, Ipv4Cidr, Ipv6Address, Ipv6Cidr};
-
     match addr {
         IpAddr::V4(a) => {
-            let a = Ipv4Address::from(a);
-            Ipv4Cidr::new(Ipv4Address::new(0, 0, 0, 0), 8).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(127, 0, 0, 0), 8).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(10, 0, 0, 0), 8).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(169, 254, 0, 0), 16).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(192, 168, 0, 0), 16).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(172, 16, 0, 0), 12).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(224, 0, 0, 0), 4).contains_addr(&a)
-                || Ipv4Cidr::new(Ipv4Address::new(240, 0, 0, 0), 4).contains_addr(&a)
+            let [a0, a1, ..] = a.octets();
+            a.is_unspecified()
+                || a.is_loopback()
+                || a.is_private()
+                || (a0 == 169 && a1 == 254) // 169.254.0.0/16
+                || (224..=239).contains(&a0) // 224.0.0.0/4
+                || (240..=255).contains(&a0) // 240.0.0.0/4 (incl. 255.255.255.255)
         }
         IpAddr::V6(a) => {
-            let a = Ipv6Address::from(a);
-            Ipv6Cidr::new(Ipv6Address::LOOPBACK, 128).contains_addr(&a)
-                || Ipv6Cidr::new(Ipv6Address::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7).contains_addr(&a)
-                || a.is_link_local()
+            a.is_unspecified()
+                || a.is_loopback()
+                || {
+                    // fc00::/7 unique local
+                    let seg0 = a.segments()[0];
+                    (seg0 & 0xfe00) == 0xfc00
+                }
+                || a.is_unicast_link_local()
         }
     }
 }

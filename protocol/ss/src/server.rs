@@ -49,18 +49,19 @@ impl IServer for SSServer {
 }
 
 impl SSServer {
-    pub fn new(cfg: SSServerConfig) -> SSServer {
+    pub fn new(cfg: SSServerConfig) -> Result<SSServer> {
         let context = Arc::new(Context::new(ServerType::Local));
         let svr_cfg =
-            ServerConfig::new(("example.com", 0), cfg.password.clone(), cfg.cipher.into());
+            ServerConfig::new(("example.com", 0), cfg.password.clone(), cfg.cipher.into())
+                .map_err(rd_interface::error::map_other)?;
 
-        SSServer {
+        Ok(SSServer {
             bind: cfg.bind,
             context,
             cfg: Arc::new(svr_cfg),
             listen: cfg.listen.value_cloned(),
             net: cfg.net.value_cloned(),
-        }
+        })
     }
     async fn serve_udp(&self) -> Result<()> {
         let udp_listener = self
@@ -106,7 +107,7 @@ impl SSServer {
         net: Net,
         addr: SocketAddr,
     ) -> Result<()> {
-        let mut socket = CryptoStream::from_stream(context, socket, cfg.method(), cfg.key());
+        let mut socket = CryptoStream::from_server_stream(context, socket, cfg.method(), cfg.key());
         let target = S5Addr::read(&mut socket).await.map_err(|e| e.to_io_err())?;
 
         let ctx = &mut rd_interface::Context::from_socketaddr(addr);

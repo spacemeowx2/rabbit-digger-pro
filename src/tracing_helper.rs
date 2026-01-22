@@ -2,7 +2,6 @@ use chrono::Utc;
 use serde::ser::{SerializeMap, Serializer as _};
 use std::io;
 use tracing::{Event, Subscriber};
-use tracing_opentelemetry::OtelData;
 use tracing_serde::fields::AsMap;
 use tracing_serde::AsSerde;
 use tracing_subscriber::fmt::format::Writer;
@@ -136,23 +135,6 @@ where
             if current_span.is_some() {
                 serializer
                     .serialize_entry("spans", &SerializableContext(&ctx, format_field_marker))?;
-            }
-
-            if let Some(mut span_ref) = ctx.lookup_current() {
-                loop {
-                    if let Some(OtelData { builder, .. }) = span_ref.extensions().get::<OtelData>()
-                    {
-                        if let Some(trace_id) = builder.trace_id {
-                            serializer.serialize_entry("trace_id", &format!("{:x?}", trace_id))?;
-                            break;
-                        }
-                    }
-                    if let Some(parent) = span_ref.parent() {
-                        span_ref = parent;
-                    } else {
-                        break;
-                    }
-                }
             }
 
             serializer.end()

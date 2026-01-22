@@ -1,5 +1,6 @@
 use anyhow::Result;
 use axum::{
+    body::Body,
     extract::Extension,
     http,
     middleware::{self, Next},
@@ -94,7 +95,7 @@ impl ApiServer {
 struct AuthQuery {
     token: String,
 }
-async fn auth<B>(req: Request<B>, next: Next<B>, token: String) -> impl IntoResponse {
+async fn auth(req: Request<Body>, next: Next, token: String) -> impl IntoResponse {
     let auth_header = req
         .headers()
         .get(http::header::AUTHORIZATION)

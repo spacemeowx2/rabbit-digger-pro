@@ -13,6 +13,6 @@ hex = "0.4.3"
 socks5-protocol = "0.3.4"
 futures = "0.3"
 tokio = "1.0"
-tokio-tungstenite = "0.20.0"
+tokio-tungstenite = "0.28.0"
 tokio-util = { version = "0.7.1", features = ["codec", "net"] }
 bytes = "1.1.0"

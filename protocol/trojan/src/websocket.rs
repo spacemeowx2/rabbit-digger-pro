@@ -78,7 +78,7 @@ impl<S: IOStream> AsyncWrite for WebSocketStream<S> {
             ready!(self.client.poll_ready_unpin(cx).map_err(map_other)?);
 
             self.client
-                .start_send_unpin(Message::binary(buf))
+                .start_send_unpin(Message::binary(buf.to_vec()))
                 .map_err(map_other)?;
             self.wrote = buf.len();
         }

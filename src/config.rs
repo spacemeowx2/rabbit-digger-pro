@@ -3,11 +3,7 @@ use anyhow::{anyhow, Context, Result};
 use futures::{Future, StreamExt};
 use notify_stream::{notify::RecursiveMode, notify_stream};
 use rabbit_digger::Config;
-use rd_interface::{
-    prelude::*,
-    rd_config,
-    schemars::{schema::SchemaObject, schema_for},
-};
+use rd_interface::{prelude::*, rd_config};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -238,22 +234,7 @@ pub struct Import {
     pub opt: Value,
 }
 
-impl Import {
-    // Append fields other than opt to a schema
-    pub(crate) fn append_schema(mut schema: SchemaObject) -> SchemaObject {
-        let properties = &mut schema.object().properties;
-        properties.insert(
-            "name".to_string(),
-            schema_for!(Option<String>).schema.into(),
-        );
-        properties.insert(
-            "source".to_string(),
-            schema_for!(ImportSource).schema.into(),
-        );
-        schema.object().required.insert("source".to_string());
-        schema
-    }
-}
+impl Import {}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub(crate) struct ConfigImport {

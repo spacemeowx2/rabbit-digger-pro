@@ -1,8 +1,11 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use bytes::Bytes;
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::{
-    client::conn as client_conn, http, server::conn as server_conn, service::service_fn, Body,
-    Method, Request, Response,
+    body::Incoming, client::conn::http1 as client_http1, http, server::conn::http1 as server_http1,
+    service::service_fn, Method, Request, Response,
 };
+use hyper_util::rt::TokioIo;
 use rd_interface::{async_trait, Address, Context, IServer, IntoAddress, Net, Result, TcpStream};
 use std::net::SocketAddr;
 use tracing::instrument;
@@ -21,12 +24,13 @@ impl HttpServer {
     pub async fn serve_connection(self, socket: TcpStream, addr: SocketAddr) -> anyhow::Result<()> {
         let net = self.net.clone();
 
-        server_conn::Http::new()
-            .http1_preserve_header_case(true)
-            .http1_title_case_headers(true)
-            .http1_keep_alive(true)
+        let io = TokioIo::new(socket);
+        server_http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .keep_alive(true)
             .serve_connection(
-                socket,
+                io,
                 service_fn(move |req| {
                     proxy(
                         net.clone(),
@@ -148,11 +152,31 @@ const HOP_BY_HOP_HEADERS: [&str; 8] = [
 
 async fn proxy(
     net: Net,
-    mut req: Request<Body>,
+    mut req: Request<Incoming>,
     addr: SocketAddr,
     username: Option<String>,
     password: Option<String>,
-) -> anyhow::Result<Response<Body>> {
+) -> anyhow::Result<Response<http_body_util::combinators::BoxBody<Bytes, BoxError>>> {
+    fn box_infallible<B>(body: B) -> http_body_util::combinators::BoxBody<Bytes, BoxError>
+    where
+        B: hyper::body::Body<Data = Bytes, Error = std::convert::Infallible>
+            + Send
+            + Sync
+            + 'static,
+    {
+        body.map_err(|e| match e {}).boxed()
+    }
+
+    fn box_hyper_body<B>(body: B) -> http_body_util::combinators::BoxBody<Bytes, BoxError>
+    where
+        B: hyper::body::Body<Data = Bytes, Error = hyper::Error> + Send + Sync + 'static,
+    {
+        body.map_err(|e| -> BoxError { Box::new(e) }).boxed()
+    }
+
+    fn boxed_text(text: &'static str) -> http_body_util::combinators::BoxBody<Bytes, BoxError> {
+        box_infallible(Full::new(Bytes::from_static(text.as_bytes())))
+    }
     if !verify_auth(
         req.headers()
             .get(hyper::http::header::PROXY_AUTHORIZATION)
@@ -167,7 +191,7 @@ async fn proxy(
                 "Basic realm=\"HTTP Proxy\"",
             );
 
-        let resp = resp.body(Body::from("Proxy authentication required"))?;
+        let resp = resp.body(boxed_text("Proxy authentication required"))?;
         return Ok(resp);
     }
 
@@ -185,6 +209,7 @@ async fn proxy(
                     Ok(upgraded) => {
                         let mut ctx = Context::from_socketaddr(addr);
                         let stream = net.tcp_connect(&mut ctx, &dst).await?;
+                        let upgraded = TokioIo::new(upgraded);
                         if let Err(e) = ctx.connect_tcp(stream, upgraded).await {
                             tracing::debug!("tunnel io error: {}", e);
                         };
@@ -195,7 +220,7 @@ async fn proxy(
             });
 
             let resp = Response::builder().status(http::StatusCode::OK);
-            Ok(resp.body(Body::empty())?)
+            Ok(resp.body(box_infallible(Empty::<Bytes>::new()))?)
         } else {
             // For non-CONNECT requests
             // Ensure absolute-form URI
@@ -209,7 +234,7 @@ async fn proxy(
                     .parse()?;
                 } else {
                     let resp = Response::builder().status(http::StatusCode::BAD_REQUEST);
-                    return Ok(resp.body(Body::from("Bad Request: Missing Host header"))?);
+                    return Ok(resp.body(boxed_text("Bad Request: Missing Host header"))?);
                 }
             }
 
@@ -242,11 +267,8 @@ async fn proxy(
                 .tcp_connect(&mut Context::from_socketaddr(addr), &dst)
                 .await?;
 
-            let (mut request_sender, connection) = client_conn::Builder::new()
-                .http1_preserve_header_case(true)
-                .http1_title_case_headers(true)
-                .handshake(stream)
-                .await?;
+            let io = TokioIo::new(stream);
+            let (mut request_sender, connection) = client_http1::handshake(io).await?;
 
             tokio::spawn(connection);
 
@@ -258,17 +280,19 @@ async fn proxy(
                 headers.remove(*header);
             }
 
-            Ok(resp)
+            Ok(resp.map(box_hyper_body))
         }
     } else {
         tracing::error!("Invalid request URI: {:?}", req.uri());
         let resp = Response::builder().status(http::StatusCode::BAD_REQUEST);
 
-        let resp = resp.body(Body::from("Bad Request: Invalid request URI format"))?;
+        let resp = resp.body(boxed_text("Bad Request: Invalid request URI format"))?;
 
         Ok(resp)
     }
 }
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 fn host_addr(uri: &http::Uri) -> Option<String> {
     uri.authority().map(|auth| auth.to_string())

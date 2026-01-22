@@ -49,10 +49,10 @@ impl ReverseLookup {
         for rdata in msg.answers().iter().flat_map(|i| i.data()) {
             match rdata {
                 RData::A(addr) => {
-                    records.insert((*addr).into(), domain.to_string());
+                    records.insert(IpAddr::V4((*addr).0), domain.to_string());
                 }
                 RData::AAAA(addr) => {
-                    records.insert((*addr).into(), domain.to_string());
+                    records.insert(IpAddr::V6((*addr).0), domain.to_string());
                 }
                 RData::CNAME(cname) => {
                     let cname = cname.to_utf8().trim_end_matches('.').to_string();

@@ -24,7 +24,8 @@
 use std::io::{self, Cursor, ErrorKind};
 
 use bytes::{BufMut, BytesMut};
-use shadowsocks::crypto::v1::{random_iv_or_salt, Cipher, CipherCategory, CipherKind};
+use shadowsocks::crypto::v1::{random_iv_or_salt, Cipher};
+use shadowsocks::crypto::{CipherCategory, CipherKind};
 use socks5_protocol::{sync::FromIO, Address};
 
 fn write_to_buf(addr: &Address, buf: &mut BytesMut) -> io::Result<()> {
