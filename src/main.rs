@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
 
     cfg_if! {
         if #[cfg(feature = "telemetry")] {
-            let tracer = opentelemetry_jaeger::new_pipeline()
+            let tracer = opentelemetry_jaeger::new_agent_pipeline()
                 .with_service_name("rabbit_digger_pro")
                 .install_batch(opentelemetry::runtime::Tokio)?;
             // only for debug
