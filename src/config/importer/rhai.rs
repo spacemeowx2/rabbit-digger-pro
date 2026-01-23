@@ -57,3 +57,50 @@ impl IntoDyn<BoxImporter> for Rhai {
         Box::new(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_rhai_importer_can_modify_config() {
+        let mut cfg = rabbit_digger::config::Config::default();
+        cfg.id = "before".to_string();
+
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let mut importer = Rhai {};
+
+        importer
+            .process(&mut cfg, r#"config.id = "after";"#, &cache)
+            .await
+            .unwrap();
+
+        assert_eq!(cfg.id, "after");
+    }
+
+    #[tokio::test]
+    async fn test_rhai_importer_eval_error_is_reported() {
+        let mut cfg = rabbit_digger::config::Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let mut importer = Rhai {};
+
+        let err = importer.process(&mut cfg, "this_is_invalid(", &cache).await;
+        assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rhai_importer_from_dynamic_error_is_reported() {
+        let mut cfg = rabbit_digger::config::Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let mut importer = Rhai {};
+
+        let err = importer.process(&mut cfg, "config = 1;", &cache).await;
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_rhai_builder_and_into_dyn() {
+        let r = <Rhai as rd_interface::registry::Builder<BoxImporter>>::build(Rhai {}).unwrap();
+        let _dyn_imp = r.into_dyn();
+    }
+}

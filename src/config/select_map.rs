@@ -46,3 +46,64 @@ impl SelectMap {
         self.0.insert(key, value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryCache;
+    use rabbit_digger::config::{Config, Net};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn test_from_cache_invalid_json_is_empty() {
+        let cache = MemoryCache::new().await.unwrap();
+        cache.set("id", "not-json").await.unwrap();
+
+        let m = SelectMap::from_cache("id", &cache).await.unwrap();
+        assert!(m.0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_apply_config_overrides_when_selected_in_list() {
+        let mut cfg = Config::default();
+        cfg.net.insert(
+            "sel".to_string(),
+            Net::new(
+                "select",
+                json!({
+                    "list": ["a", "b"],
+                    "selected": "a"
+                }),
+            ),
+        );
+
+        let mut m = SelectMap(HashMap::new());
+        m.insert("sel".to_string(), "b".to_string());
+        m.apply_config(&mut cfg).await;
+
+        let opt = cfg.net.get("sel").unwrap().opt.as_object().unwrap();
+        assert_eq!(opt.get("selected").unwrap().as_str().unwrap(), "b");
+    }
+
+    #[tokio::test]
+    async fn test_apply_config_skips_when_selected_not_in_list() {
+        let mut cfg = Config::default();
+        cfg.net.insert(
+            "sel".to_string(),
+            Net::new(
+                "select",
+                json!({
+                    "list": ["a"],
+                    "selected": "a"
+                }),
+            ),
+        );
+
+        let mut m = SelectMap(HashMap::new());
+        m.insert("sel".to_string(), "b".to_string());
+        m.apply_config(&mut cfg).await;
+
+        let opt = cfg.net.get("sel").unwrap().opt.as_object().unwrap();
+        assert_eq!(opt.get("selected").unwrap().as_str().unwrap(), "a");
+    }
+}

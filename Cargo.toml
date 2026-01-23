@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.100"
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.49.0", features = ["full", "test-util"] }
 tokio-stream = { version = "0.1.18", features = ["net", "sync", "time"] }
 clap = { version = "4.5.54", default-features = false, features = [
     "std",
@@ -35,7 +35,11 @@ serde = { version = "1.0.228", features = ["derive"] }
 rd-interface = { path = "./rd-interface/", version = "0.4" }
 rd-std = { path = "./rd-std/", version = "0.1" }
 cfg-if = "1.0.4"
-reqwest = { version = "0.13.1", features = ["native-tls-vendored", "socks"] }
+reqwest = { version = "0.13.1", features = [
+    "native-tls-vendored",
+    "socks",
+    "json",
+] }
 parking_lot = "0.12.5"
 uuid = { version = "1.19.0", features = ["v4"] }
 fs2 = "0.4.3"
@@ -83,6 +87,9 @@ mimalloc = { version = "0.1", optional = true }
 
 [dev-dependencies]
 rusty-hook = "0.11.0"
+tempfile = "3.24.0"
+tower = "0.5.2"
+tokio-tungstenite = "0.28.0"
 
 [features]
 default = [

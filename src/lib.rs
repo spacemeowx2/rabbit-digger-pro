@@ -73,3 +73,41 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_config_minimal() {
+        let cfg = deserialize_config(
+            r#"
+id: test
+net: {}
+server: {}
+"#,
+        )
+        .unwrap();
+        let v = serde_yaml::to_value(&cfg).unwrap();
+        assert_eq!(v.get("id").and_then(|v| v.as_str()), Some("test"));
+    }
+
+    #[test]
+    fn test_get_registry_smoke() {
+        let registry = get_registry().unwrap();
+        assert!(!registry.net().is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_config_invalid_is_error() {
+        let err = deserialize_config("not: [valid").unwrap_err();
+        let _ = err;
+    }
+
+    #[tokio::test]
+    async fn test_app_new_smoke() {
+        let app = App::new().await.unwrap();
+        // Make sure the object is usable.
+        let _ = app.rd.get_id().await;
+    }
+}

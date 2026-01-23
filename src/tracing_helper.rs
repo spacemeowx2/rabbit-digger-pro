@@ -171,3 +171,109 @@ impl<'a> io::Write for WriteAdaptor<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn test_write_adaptor_valid_utf8() {
+        let mut out = String::new();
+        let mut w = WriteAdaptor::new(&mut out);
+        w.write_all(b"abc").unwrap();
+        assert_eq!(out, "abc");
+    }
+
+    #[test]
+    fn test_write_adaptor_invalid_utf8_is_error() {
+        let mut out = String::new();
+        let mut w = WriteAdaptor::new(&mut out);
+        let err = w.write(&[0xff]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[derive(Clone)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    struct SharedBufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedBufWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let mut locked = self.0.lock().unwrap();
+            locked.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for SharedBuf {
+        type Writer = SharedBufWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedBufWriter(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn test_trace_id_format_emits_json_with_span_context() {
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let make = SharedBuf(buf.clone());
+
+        let layer = tracing_subscriber::fmt::layer()
+            .json()
+            .event_format(TraceIdFormat)
+            .with_writer(make);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("test_span", answer = 42);
+            let _g = span.enter();
+            tracing::info!(hello = true, "msg");
+        });
+
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let line = out.lines().find(|l| !l.trim().is_empty()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+
+        assert!(v.get("timestamp").is_some());
+        assert!(v.get("level").is_some());
+        assert!(v.get("fields").is_some());
+        assert!(v.get("target").is_some());
+        assert!(v.get("span").is_some());
+        assert!(v.get("spans").is_some());
+    }
+
+    #[test]
+    fn test_trace_id_format_without_span_context() {
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let make = SharedBuf(buf.clone());
+
+        let layer = tracing_subscriber::fmt::layer()
+            .json()
+            .event_format(TraceIdFormat)
+            .with_writer(make);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(hello = true, "msg");
+        });
+
+        let out = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let line = out.lines().find(|l| !l.trim().is_empty()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+
+        assert!(v.get("timestamp").is_some());
+        assert!(v.get("fields").is_some());
+        assert!(v.get("span").is_none());
+        assert!(v.get("spans").is_none());
+    }
+}

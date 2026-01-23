@@ -55,3 +55,29 @@ pub trait Importer: Send + Sync {
     ) -> Result<()>;
 }
 pub type BoxImporter = Box<dyn Importer>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Import, ImportSource};
+    use serde_json::json;
+
+    #[test]
+    fn test_get_importer_registry_contains_builtin_importers() {
+        let reg = get_importer_registry();
+        assert!(reg.contains_key("clash"));
+        assert!(reg.contains_key("merge"));
+    }
+
+    #[test]
+    fn test_get_importer_unknown_fails() {
+        let import = Import {
+            name: None,
+            format: "does-not-exist".to_string(),
+            source: ImportSource::Text("x".to_string()),
+            opt: json!({}),
+        };
+        let err = get_importer(&import).err().unwrap();
+        assert!(err.to_string().contains("Importer not found"));
+    }
+}

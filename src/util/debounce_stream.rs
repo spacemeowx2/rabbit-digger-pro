@@ -49,12 +49,46 @@ where
             }
             Poll::Pending => {}
         };
-        let poll_timer = this.timer.as_mut().map(|t| Future::poll(Pin::new(t), cx));
+        let poll_timer = this.timer.as_mut().map(|t| Future::poll(t.as_mut(), cx));
         if let Some(Poll::Ready(_)) = poll_timer {
             *this.timer = None;
             Poll::Ready(this.item.take())
         } else {
             Poll::Pending
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use tokio::sync::mpsc;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_debounce_yields_latest_after_delay() {
+        let (tx, rx) = mpsc::unbounded_channel::<i32>();
+        let mut s = UnboundedReceiverStream::new(rx).debounce(Duration::from_millis(50));
+
+        let handle = tokio::spawn(async move { s.next().await });
+
+        // Let the task poll once and register wakers.
+        tokio::task::yield_now().await;
+
+        tx.send(1).unwrap();
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tx.send(2).unwrap();
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(10)).await;
+        tx.send(3).unwrap();
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let v = handle.await.unwrap();
+        assert_eq!(v, Some(3));
     }
 }

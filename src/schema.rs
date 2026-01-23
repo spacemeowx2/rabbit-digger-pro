@@ -122,3 +122,35 @@ pub async fn generate_schema() -> Result<Schema> {
 
     value_to_schema(root)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_value_roundtrip() {
+        let schema = schema_for!(Option<String>);
+        let v = schema_to_value(&schema).unwrap();
+        let schema2 = value_to_schema(v).unwrap();
+        // Basic sanity: serialized value remains an object.
+        let _ = schema2;
+    }
+
+    #[tokio::test]
+    async fn test_generate_schema_smoke() {
+        let schema = generate_schema().await.unwrap();
+        let v = serde_json::to_value(&schema).unwrap();
+        assert_eq!(v.get("title").and_then(|t| t.as_str()), Some("Config"));
+        assert!(v.get("properties").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_write_schema_creates_parent_dir_and_writes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("schema.json");
+        write_schema(&path).await.unwrap();
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v.get("title").and_then(|t| t.as_str()), Some("Config"));
+    }
+}

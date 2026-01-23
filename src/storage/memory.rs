@@ -61,3 +61,28 @@ impl Storage for MemoryCache {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_memory_cache_roundtrip() {
+        let cache = MemoryCache::new().await.unwrap();
+        assert!(cache.get("k").await.unwrap().is_none());
+
+        cache.set("k", "v").await.unwrap();
+        let item = cache.get("k").await.unwrap().unwrap();
+        assert_eq!(item.content, "v");
+
+        let keys = cache.keys().await.unwrap();
+        assert!(keys.iter().any(|i| i.key == "k"));
+
+        cache.remove("k").await.unwrap();
+        assert!(cache.get("k").await.unwrap().is_none());
+
+        cache.set("k2", "v2").await.unwrap();
+        cache.clear().await.unwrap();
+        assert!(cache.keys().await.unwrap().is_empty());
+    }
+}

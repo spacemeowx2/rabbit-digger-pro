@@ -549,6 +549,7 @@ mod tests {
     use super::*;
     use serde_yaml::from_str;
     use std::fs;
+    use tempfile::NamedTempFile;
 
     #[tokio::test]
     async fn test_importer_clash_relay() {
@@ -573,5 +574,271 @@ mod tests {
         let config_string = serde_yaml::to_string(&config).unwrap();
 
         assert_eq!(config_string, wanted_content);
+    }
+
+    fn base_clash() -> Clash {
+        Clash {
+            rule_name: None,
+            prefix: None,
+            direct: None,
+            reject: None,
+            disable_proxy_group: false,
+            select: None,
+            name_map: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_get_target_defaults_and_errors() {
+        let mut c = base_clash();
+        c.name_map.insert("ProxyA".to_string(), "pA".to_string());
+
+        assert_eq!(c.get_target("DIRECT").unwrap(), "local");
+        assert_eq!(c.get_target("REJECT").unwrap(), "blackhole");
+        assert_eq!(c.get_target("ProxyA").unwrap(), "pA");
+
+        let err = c.get_target("Missing").unwrap_err();
+        assert!(err.to_string().contains("Name not found"));
+    }
+
+    #[test]
+    fn test_proxy_to_net_variants_and_plugin_errors() {
+        let c = base_clash();
+
+        let ss: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "type": "ss",
+            "server": "example.com",
+            "port": 443,
+            "cipher": "aes-128-gcm",
+            "password": "pw",
+            "udp": true
+        }))
+        .unwrap();
+        assert_eq!(c.proxy_to_net(ss, None).unwrap().net_type, "shadowsocks");
+
+        let ss_obfs: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "type": "ss",
+            "server": "example.com",
+            "port": 443,
+            "cipher": "aes-128-gcm",
+            "password": "pw",
+            "plugin": "obfs",
+            "plugin-opts": {"mode": "tls"}
+        }))
+        .unwrap();
+        assert_eq!(
+            c.proxy_to_net(ss_obfs, None).unwrap().net_type,
+            "shadowsocks"
+        );
+
+        let ss_bad_plugin: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "p",
+            "type": "ss",
+            "server": "example.com",
+            "port": 443,
+            "cipher": "aes-128-gcm",
+            "password": "pw",
+            "plugin": "something",
+            "plugin-opts": {"mode": "tls"}
+        }))
+        .unwrap();
+        assert!(c.proxy_to_net(ss_bad_plugin, None).is_err());
+
+        let trojan: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "t",
+            "type": "trojan",
+            "server": "example.com",
+            "port": 443,
+            "password": "pw"
+        }))
+        .unwrap();
+        assert_eq!(c.proxy_to_net(trojan, None).unwrap().net_type, "trojan");
+
+        let http: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "h",
+            "type": "http",
+            "server": "example.com",
+            "port": 8080
+        }))
+        .unwrap();
+        assert_eq!(c.proxy_to_net(http, None).unwrap().net_type, "http");
+
+        let socks5: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "s",
+            "type": "socks5",
+            "server": "example.com",
+            "port": 1080
+        }))
+        .unwrap();
+        assert_eq!(c.proxy_to_net(socks5, None).unwrap().net_type, "socks5");
+
+        let other: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "x",
+            "type": "unknown",
+            "any": 1
+        }))
+        .unwrap();
+        assert!(c.proxy_to_net(other, None).is_err());
+    }
+
+    #[test]
+    fn test_proxy_group_to_net_select_and_relay_errors() {
+        let mut c = base_clash();
+        c.name_map.insert("a".to_string(), "a".to_string());
+        c.name_map.insert("b".to_string(), "b".to_string());
+
+        let mut proxy_map = HashMap::new();
+        proxy_map.insert(
+            "a".to_string(),
+            serde_json::from_value(serde_json::json!({
+                "name": "a",
+                "type": "http",
+                "server": "example.com",
+                "port": 8080
+            }))
+            .unwrap(),
+        );
+
+        let pg_select = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "select".to_string(),
+            proxies: vec!["a".to_string(), "b".to_string()],
+        };
+        assert_eq!(
+            c.proxy_group_to_net(pg_select, &proxy_map)
+                .unwrap()
+                .net_type,
+            "select"
+        );
+
+        let pg_urltest = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "url-test".to_string(),
+            proxies: vec!["a".to_string()],
+        };
+        assert_eq!(
+            c.proxy_group_to_net(pg_urltest, &proxy_map)
+                .unwrap()
+                .net_type,
+            "select"
+        );
+
+        let pg_relay_missing_proxy = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "relay".to_string(),
+            proxies: vec!["b".to_string()],
+        };
+        assert!(c
+            .proxy_group_to_net(pg_relay_missing_proxy, &proxy_map)
+            .is_err());
+
+        let pg_bad = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "bad".to_string(),
+            proxies: vec!["a".to_string()],
+        };
+        assert!(c.proxy_group_to_net(pg_bad, &proxy_map).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rule_to_rule_variants_and_rule_set_file() {
+        let mut c = base_clash();
+        c.name_map.insert("ProxyA".to_string(), "pA".to_string());
+
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let oom_lock = Mutex::new(());
+
+        let item = c
+            .rule_to_rule(
+                "DOMAIN-SUFFIX,example.com,ProxyA".to_string(),
+                &cache,
+                &BTreeMap::new(),
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+        match item.matcher {
+            Matcher::Domain(d) => assert!(matches!(d.method, DomainMatcherMethod::Suffix)),
+            _ => panic!("unexpected matcher"),
+        }
+
+        let item = c
+            .rule_to_rule(
+                "IP-CIDR,1.2.3.0/24,ProxyA".to_string(),
+                &cache,
+                &BTreeMap::new(),
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+        matches!(item.matcher, Matcher::IpCidr(_));
+
+        let item = c
+            .rule_to_rule(
+                "SRC-IP-CIDR,10.0.0.0/8,ProxyA".to_string(),
+                &cache,
+                &BTreeMap::new(),
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+        matches!(item.matcher, Matcher::SrcIpCidr(_));
+
+        let item = c
+            .rule_to_rule(
+                "MATCH,ProxyA".to_string(),
+                &cache,
+                &BTreeMap::new(),
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+        matches!(item.matcher, Matcher::Any(_));
+
+        let item = c
+            .rule_to_rule(
+                "GEOIP,CN,ProxyA".to_string(),
+                &cache,
+                &BTreeMap::new(),
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+        matches!(item.matcher, Matcher::GeoIp(_));
+
+        let mut rules = BTreeMap::new();
+        let mut tmp = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(&mut tmp, b"payload:\n  - example.com\n  - foo.bar\n").unwrap();
+
+        rules.insert(
+            "set1".to_string(),
+            RuleProvider {
+                rule_type: "file".to_string(),
+                behavior: "domain".to_string(),
+                url: "".to_string(),
+                path: tmp.path().to_string_lossy().to_string(),
+                interval: 1,
+            },
+        );
+
+        let item = c
+            .rule_to_rule(
+                "RULE-SET,set1,ProxyA".to_string(),
+                &cache,
+                &rules,
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+
+        match item.matcher {
+            Matcher::Domain(d) => {
+                assert!(matches!(d.method, DomainMatcherMethod::Match));
+                assert!(d.domain.len() >= 2);
+            }
+            _ => panic!("unexpected matcher"),
+        }
     }
 }

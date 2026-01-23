@@ -61,15 +61,15 @@ impl ApiServer {
             )
             .route("/get", get(handlers::get_registry))
             .route("/state", get(handlers::get_state))
-            .route("/connection/:uuid", delete(handlers::delete_conn))
+            .route("/connection/{uuid}", delete(handlers::delete_conn))
             .route(
                 "/connection",
                 get(handlers::get_connections).delete(handlers::delete_connections),
             )
-            .route("/net/:net_name", post(handlers::post_select))
-            .route("/net/:net_name/delay", get(handlers::get_delay))
+            .route("/net/{net_name}", post(handlers::post_select))
+            .route("/net/{net_name}/delay", get(handlers::get_delay))
             .route(
-                "/userdata/*path",
+                "/userdata/{*path}",
                 get(handlers::get_userdata)
                     .put(handlers::put_userdata)
                     .delete(handlers::delete_userdata),
