@@ -22,7 +22,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 
 - [x] Domain crates (`rd-interface`, `rd-derive`) must not depend on Core, Adapters, or App crates.
 - [x] Core crate (`rabbit-digger`) must not depend on App crates; avoid depending on Adapters long-term.
-- [ ] Adapters (`rd-std`, `protocol/*`) must not depend on Core or App crates.
+- [x] Adapters (`rd-std`, `protocol/*`) must not depend on Core or App crates.
 - [ ] App (`rabbit-digger-pro`) may depend on Core and a _bundle_ crate; avoid direct dependencies on individual protocol crates.
 
 ## 3) Commit Plan (step-by-step)
