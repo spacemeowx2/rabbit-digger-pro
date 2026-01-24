@@ -6,6 +6,7 @@ mod context;
 pub mod http;
 pub mod mixed;
 pub mod rule;
+pub mod select;
 pub mod sniffer;
 pub mod socks5;
 pub mod tests;
@@ -22,6 +23,7 @@ pub fn init(registry: &mut Registry) -> Result<()> {
     transparent::init(registry)?;
     rule::init(registry)?;
     socks5::init(registry)?;
+    select::init(registry)?;
     Ok(())
 }
 

@@ -2956,25 +2956,22 @@ dependencies = [
  "json-patch",
  "mimalloc",
  "notify-stream",
- "obfs",
  "once_cell",
  "opentelemetry",
  "parking_lot",
  "percent-encoding",
  "pin-project-lite",
  "rabbit-digger",
- "raw",
  "rd-interface",
  "rd-std",
+ "rdp-bundle",
  "reqwest",
  "rhai",
- "rpc",
  "rusty-hook",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "serde_yaml",
- "ss",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2985,7 +2982,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-serde",
  "tracing-subscriber",
- "trojan",
  "url",
  "uuid",
  "yaml-merge-keys",
@@ -3153,6 +3149,19 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rdp-bundle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "obfs",
+ "rabbit-digger",
+ "raw",
+ "rpc",
+ "ss",
+ "trojan",
 ]
 
 [[package]]

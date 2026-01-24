@@ -67,10 +67,10 @@ pub fn init(registry: &mut Registry) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use rd_interface::IntoDyn;
-    use rd_std::tests::{assert_net_provider, ProviderCapability, TestNet};
-
     use super::*;
+    use rd_interface::IntoDyn;
+
+    use crate::tests::{assert_net_provider, ProviderCapability, TestNet};
 
     #[test]
     fn test_provider() {
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_select_net_new_rejects_empty_list() {
-        let net = NetRef::new_with_value("test".into(), rd_std::tests::TestNet::new().into_dyn());
+        let net = NetRef::new_with_value("test".into(), TestNet::new().into_dyn());
         let err = SelectNet::new(SelectNetConfig {
             selected: net,
             list: vec![],

@@ -1,0 +1,28 @@
+[package]
+name = "rdp-bundle"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Composition bundle for rabbit-digger-pro"
+
+[dependencies]
+anyhow = "1.0"
+rabbit-digger = { path = "../rabbit-digger", version = "0.1" }
+
+ss = { path = "../protocol/ss", optional = true }
+trojan = { path = "../protocol/trojan", optional = true }
+rpc = { path = "../protocol/rpc", optional = true }
+raw = { path = "../protocol/raw", optional = true }
+obfs = { path = "../protocol/obfs", optional = true }
+
+[features]
+default = []
+
+ss = ["dep:ss"]
+trojan = ["dep:trojan"]
+rpc = ["dep:rpc"]
+raw = ["dep:raw"]
+obfs = ["dep:obfs"]
+
+# Forward raw's optional feature
+libpcap = ["dep:raw", "raw/libpcap"]
