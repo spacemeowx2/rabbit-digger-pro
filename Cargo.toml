@@ -24,7 +24,7 @@ tracing-subscriber = { version = "0.3.22", features = [
     "env-filter",
     "json",
 ] }
-rabbit-digger = { version = "0.1", path = "./rabbit-digger" }
+rabbit-digger = { version = "0.1", path = "./rabbit-digger", features = ["rd-std"] }
 rdp-bundle = { version = "0.1", path = "./rdp-bundle" }
 notify-stream = "0.1.1"
 futures = "0.3.31"

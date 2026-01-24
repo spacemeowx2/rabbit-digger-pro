@@ -6,15 +6,13 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use futures::{stream, StreamExt};
-use rabbit_digger::{
-    config::{Config, Net},
-    rd_std::rule::config::{
-        self as rule_config, AnyMatcher, DomainMatcher, DomainMatcherMethod, GeoIpMatcher, IpCidr,
-        IpCidrMatcher, Matcher, SrcIpCidrMatcher,
-    },
-};
+use rabbit_digger::config::{Config, Net};
 use rd_interface::{
     async_trait, config::NetRef, prelude::*, rd_config, registry::Builder, IntoDyn,
+};
+use rd_std::rule::config::{
+    self as rule_config, AnyMatcher, DomainMatcher, DomainMatcherMethod, GeoIpMatcher, IpCidr,
+    IpCidrMatcher, Matcher, SrcIpCidrMatcher,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};

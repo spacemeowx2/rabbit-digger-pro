@@ -204,6 +204,8 @@ mod tests {
         }
 
         let registry = Registry::new_with_builtin().unwrap();
+        #[cfg(not(feature = "rd-std"))]
+        let _ = &registry;
         #[cfg(feature = "rd-std")]
         {
             assert!(!registry.net().is_empty());
@@ -211,6 +213,8 @@ mod tests {
         }
 
         let registry = Registry::default();
+        #[cfg(not(feature = "rd-std"))]
+        let _ = &registry;
         #[cfg(feature = "rd-std")]
         {
             assert!(!registry.net().is_empty());

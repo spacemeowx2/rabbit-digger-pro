@@ -3159,6 +3159,7 @@ dependencies = [
  "obfs",
  "rabbit-digger",
  "raw",
+ "rd-std",
  "rpc",
  "ss",
  "trojan",
