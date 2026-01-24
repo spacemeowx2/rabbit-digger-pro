@@ -35,7 +35,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 
 ### Milestone B — Introduce a single composition point (`rdp-bundle`) (medium risk, high payoff)
 
-- [ ] Create a new workspace crate `rdp-bundle`.
+- [x] Create a new workspace crate `rdp-bundle`.
   - Purpose: build a `rabbit_digger::Registry` by registering optional plugins.
 - [ ] Move protocol plugin registration (`ss`, `trojan`, `rpc`, `raw`, `obfs`) into `rdp-bundle` behind features.
 - [ ] Make `rabbit-digger-pro` depend on `rdp-bundle` and call `rdp_bundle::build_registry()`.
