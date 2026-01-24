@@ -142,7 +142,7 @@ impl LocalNetConfig {
                     return Err(io::Error::last_os_error().into());
                 }
 
-                socket.bind_device_by_index(std::num::NonZeroU32::new(idx))?;
+                socket.bind_device_by_index_v4(std::num::NonZeroU32::new(idx))?;
             }
         }
 
