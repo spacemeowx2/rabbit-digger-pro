@@ -16,6 +16,17 @@
 
 All-in-one proxy written in Rust.
 
+## Layer Rules
+
+This repo follows a simple Clean/Hex-ish layering:
+
+- **Domain**: `rd-interface`, `rd-derive` (traits/types/derive only; no concrete implementations)
+- **Core**: `rabbit-digger` (runtime/orchestration; depends only on Domain)
+- **Adapters**: `rd-std`, `protocol/*` (concrete nets/servers; depend on Domain)
+- **App**: `rabbit-digger-pro` (CLI/API/config; composes everything via a bundle)
+
+Dependency direction is enforced in CI via `depguard`.
+
 ## Features
 
 * Hot reloading: Apply changes without restart the program.

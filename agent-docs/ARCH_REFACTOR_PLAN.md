@@ -60,7 +60,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 ## 4) Guardrails (recommended)
 
 - [x] Add CI checks for dependency direction (e.g. `cargo tree -i` patterns or `cargo deny`).
-- [ ] Add a short “layer rules” section to README.
+- [x] Add a short “layer rules” section to README.
 - [ ] Prefer `pub(crate)` for app-internal modules; keep Domain/Core public APIs minimal.
 
 ## 5) Execution Order (what I will do next)
