@@ -130,6 +130,7 @@ members = [
     "rd-std",
     "rd-derive",
     "rdp-bundle",
+    "tools/depguard",
     "protocol/ss",
     "protocol/trojan",
     "protocol/rpc",

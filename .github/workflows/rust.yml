@@ -42,6 +42,11 @@ jobs:
         with:
           command: test
           args: --all --exclude raw
+      - name: Check dependency direction
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: -p depguard -- check
       - name: Build release
         uses: actions-rs/cargo@v1
         with:
