@@ -92,6 +92,13 @@ impl Registry {
             server: BTreeMap::new(),
         }
     }
+    /// Creates an empty registry without loading any builtin implementations.
+    ///
+    /// This is the preferred constructor for “core-only” builds; composition
+    /// layers (e.g. `rdp-bundle`) should register adapters/plugins explicitly.
+    pub fn new_core() -> Registry {
+        Self::new()
+    }
     pub fn new_with_builtin() -> Result<Self> {
         let mut registry = Self::new();
 
@@ -179,8 +186,9 @@ pub struct RegistrySchema {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "rd-std")]
     use rd_interface::{Error, IntoDyn};
-    use rd_std::tests::TestNet;
+    #[cfg(feature = "rd-std")]
     use serde_json::Map;
 
     #[test]
@@ -189,19 +197,31 @@ mod tests {
         assert_eq!(registry.net().len(), 0);
         assert_eq!(registry.server().len(), 0);
         registry.load_builtin().unwrap();
-        assert!(!registry.net().is_empty());
-        assert!(!registry.server().is_empty());
+        #[cfg(feature = "rd-std")]
+        {
+            assert!(!registry.net().is_empty());
+            assert!(!registry.server().is_empty());
+        }
 
         let registry = Registry::new_with_builtin().unwrap();
-        assert!(!registry.net().is_empty());
-        assert!(!registry.server().is_empty());
+        #[cfg(feature = "rd-std")]
+        {
+            assert!(!registry.net().is_empty());
+            assert!(!registry.server().is_empty());
+        }
 
         let registry = Registry::default();
-        assert!(!registry.net().is_empty());
-        assert!(!registry.server().is_empty());
+        #[cfg(feature = "rd-std")]
+        {
+            assert!(!registry.net().is_empty());
+            assert!(!registry.server().is_empty());
+        }
 
-        assert!(registry.get_net("local").is_ok());
-        assert!(registry.get_server("socks5").is_ok());
+        #[cfg(feature = "rd-std")]
+        {
+            assert!(registry.get_net("local").is_ok());
+            assert!(registry.get_server("socks5").is_ok());
+        }
 
         assert!(registry.get_net("_NOT_EXISTED").is_err());
         assert!(registry.get_server("_NOT_EXISTED").is_err());
@@ -218,8 +238,12 @@ mod tests {
     #[test]
     fn test_registry_build() {
         let registry = Registry::new_with_builtin().unwrap();
-        let test_net = TestNet::new().into_dyn();
+        #[cfg(not(feature = "rd-std"))]
+        let _ = registry;
+        #[cfg(feature = "rd-std")]
+        let test_net = rd_std::tests::TestNet::new().into_dyn();
 
+        #[cfg(feature = "rd-std")]
         assert!(registry
             .get_net("local")
             .unwrap()
@@ -229,12 +253,14 @@ mod tests {
             )
             .is_ok());
 
+        #[cfg(feature = "rd-std")]
         assert!(registry
             .get_server("socks5")
             .unwrap()
             .build(&|_, _| Ok(test_net.clone()), &mut Value::Object(Map::new()))
             .is_err());
 
+        #[cfg(feature = "rd-std")]
         assert!(registry
             .get_server("socks5")
             .unwrap()

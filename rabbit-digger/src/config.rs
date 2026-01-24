@@ -117,6 +117,7 @@ pub fn init_default_net(config_net: &mut ConfigNet) -> rd_interface::Result<()> 
             Net::new_opt("blackhole", EmptyConfig::default())?,
         );
     }
+    #[cfg(feature = "rd-std")]
     if !config_net.contains_key("local") {
         config_net.insert(
             "local".to_string(),

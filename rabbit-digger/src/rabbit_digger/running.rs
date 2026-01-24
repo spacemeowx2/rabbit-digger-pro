@@ -440,7 +440,7 @@ impl RunningServer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rd-std"))]
 mod tests {
     use rd_interface::{context::common_field, IServer, IntoAddress};
     use rd_std::{

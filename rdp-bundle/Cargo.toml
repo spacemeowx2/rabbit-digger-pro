@@ -9,6 +9,8 @@ description = "Composition bundle for rabbit-digger-pro"
 anyhow = "1.0"
 rabbit-digger = { path = "../rabbit-digger", version = "0.1" }
 
+rd-std = { path = "../rd-std", version = "0.1", optional = true }
+
 ss = { path = "../protocol/ss", optional = true }
 trojan = { path = "../protocol/trojan", optional = true }
 rpc = { path = "../protocol/rpc", optional = true }
@@ -16,7 +18,9 @@ raw = { path = "../protocol/raw", optional = true }
 obfs = { path = "../protocol/obfs", optional = true }
 
 [features]
-default = []
+default = ["std"]
+
+std = ["dep:rd-std"]
 
 ss = ["dep:ss"]
 trojan = ["dep:trojan"]

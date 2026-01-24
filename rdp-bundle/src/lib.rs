@@ -1,7 +1,10 @@
 use anyhow::Result;
 
 pub fn build_registry() -> Result<rabbit_digger::Registry> {
-    let mut registry = rabbit_digger::Registry::new_with_builtin()?;
+    let mut registry = rabbit_digger::Registry::new_core();
+
+    #[cfg(feature = "std")]
+    registry.init_with_registry("std", rd_std::init)?;
 
     #[cfg(feature = "ss")]
     registry.init_with_registry("ss", ss::init)?;
