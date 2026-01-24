@@ -45,7 +45,8 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 
 ### Milestone C — Reduce Core ↔ Adapters coupling (optional, later)
 
-- [ ] Audit `rabbit-digger` builtin loading (`Registry::new_with_builtin`) and plan to move builtin implementations into adapters.
+- [x] Audit `rabbit-digger` builtin loading (`Registry::new_with_builtin`) and plan to move builtin implementations into adapters.
+  - Note: builtins are currently registered via `rabbit_digger::builtin::load_builtin` (registers `rd_std::init` when `rabbit-digger` has `rd-std` feature).
 - [ ] Introduce a “core-only registry” constructor (no builtin implementations) and let `rdp-bundle` assemble everything.
   - Acceptance: core can be built without `rd-std`.
 
