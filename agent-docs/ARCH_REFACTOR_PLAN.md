@@ -29,7 +29,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 
 ### Milestone A — Stop leaking adapters into App (low risk)
 
-- [ ] Move the `select` net implementation from the app crate to adapters (prefer `rd-std`).
+- [x] Move the `select` net implementation from the app crate to adapters (prefer `rd-std`).
   - Acceptance: `select` still appears in registry schema; tests compile.
 - [ ] Remove `select` registration from the app’s registry wiring.
 
