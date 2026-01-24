@@ -38,7 +38,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 - [x] Create a new workspace crate `rdp-bundle`.
   - Purpose: build a `rabbit_digger::Registry` by registering optional plugins.
 - [x] Move protocol plugin registration (`ss`, `trojan`, `rpc`, `raw`, `obfs`) into `rdp-bundle` behind features.
-- [ ] Make `rabbit-digger-pro` depend on `rdp-bundle` and call `rdp_bundle::build_registry()`.
+- [x] Make `rabbit-digger-pro` depend on `rdp-bundle` and call `rdp_bundle::build_registry()`.
   - Acceptance: app no longer imports protocol crates directly.
 - [ ] Re-map existing features in `rabbit-digger-pro` to enable corresponding features in `rdp-bundle`.
   - Acceptance: `cargo build --features ss` etc still works.
