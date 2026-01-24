@@ -46,7 +46,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: run
-          args: -p depguard -- check
+          args: -p rdp-depguard -- check
       - name: Build release
         uses: actions-rs/cargo@v1
         with:

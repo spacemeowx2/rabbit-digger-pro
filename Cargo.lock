@@ -988,14 +988,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "depguard"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cargo_metadata",
-]
-
-[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3194,6 +3186,14 @@ dependencies = [
  "rpc",
  "ss",
  "trojan",
+]
+
+[[package]]
+name = "rdp-depguard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cargo_metadata",
 ]
 
 [[package]]

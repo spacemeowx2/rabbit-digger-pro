@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 fn main() {
     if let Err(err) = real_main() {
-        eprintln!("depguard: {err:?}");
+        eprintln!("rdp-depguard: {err:?}");
         std::process::exit(1);
     }
 }

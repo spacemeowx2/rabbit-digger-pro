@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1.0.38"
-rabbit-digger-pro = { path = "../", default-features = false, features = [
+rabbit-digger-pro = { path = "../../", default-features = false, features = [
     "trojan",
     "rpc",
     "obfs",

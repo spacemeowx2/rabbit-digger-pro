@@ -9,7 +9,7 @@ use once_cell::sync::OnceCell;
 use tar::Archive;
 
 // Update this when blob is updated
-static GEOIP_TAR_GZ: &[u8] = include_bytes!("../../../blob/GeoLite2-Country.tar.gz");
+static GEOIP_TAR_GZ: &[u8] = include_bytes!("../../../../blob/GeoLite2-Country.tar.gz");
 static MMDB_FILE_NAME: &str = "GeoLite2-Country.mmdb";
 static GEOIP_DB: OnceCell<maxminddb::Reader<Box<[u8]>>> = OnceCell::new();
 
