@@ -31,7 +31,7 @@ This document turns the proposed Clean/Hex refactor into a commit-friendly check
 
 - [x] Move the `select` net implementation from the app crate to adapters (prefer `rd-std`).
   - Acceptance: `select` still appears in registry schema; tests compile.
-- [ ] Remove `select` registration from the app’s registry wiring.
+- [x] Remove `select` registration from the app’s registry wiring.
 
 ### Milestone B — Introduce a single composition point (`rdp-bundle`) (medium risk, high payoff)
 
