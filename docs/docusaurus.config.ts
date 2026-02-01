@@ -70,6 +70,12 @@ const config: Config = {
           label: '配置指南',
         },
         {
+          type: 'doc',
+          docId: 'config/reference',
+          position: 'left',
+          label: '配置参考',
+        },
+        {
           href: 'https://github.com/spacemeowx2/rabbit-digger-pro',
           label: 'GitHub',
           position: 'right',
