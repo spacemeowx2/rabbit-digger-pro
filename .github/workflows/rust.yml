@@ -25,7 +25,7 @@ jobs:
         with:
           submodules: recursive
       - name: Cache Cargo
-        uses: actions/cache@v1
+        uses: actions/cache@v4
         with:
           path: ~/.cargo
           key: ${{ matrix.os }}-stable-cargo-v1
@@ -71,7 +71,7 @@ jobs:
         with:
           submodules: recursive
       - name: Cache Cargo
-        uses: actions/cache@v1
+        uses: actions/cache@v4
         with:
           path: ~/.cargo
           key: ${{ matrix.target }}-stable-cargo-v1
