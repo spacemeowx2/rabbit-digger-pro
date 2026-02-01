@@ -22,7 +22,9 @@ pub enum DomainMatcherMethod {
 #[rd_config]
 #[derive(Debug)]
 pub struct DomainMatcher {
+    /// 域名匹配方式。
     pub method: DomainMatcherMethod,
+    /// 域名或关键字列表。
     pub domain: CompactVecString,
 }
 
@@ -59,18 +61,21 @@ impl_empty_config! { IpCidr }
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct IpCidrMatcher {
+    /// 目标 IP 段列表。
     pub ipcidr: SingleOrVec<IpCidr>,
 }
 
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct SrcIpCidrMatcher {
+    /// 源 IP 段列表。
     pub ipcidr: SingleOrVec<IpCidr>,
 }
 
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct GeoIpMatcher {
+    /// 国家代码（如 CN、US）。
     pub country: String,
 }
 
@@ -137,6 +142,7 @@ impl Matcher {
 #[rd_config]
 #[derive(Debug)]
 pub struct RuleItem {
+    /// 匹配后转发到的目标 net。
     pub target: NetRef,
     #[serde(flatten)]
     pub matcher: Matcher,
@@ -155,8 +161,10 @@ impl RuleItem {
 #[rd_config]
 #[derive(Debug)]
 pub struct RuleNetConfig {
+    /// 规则匹配缓存大小。
     #[serde(default = "default_lru_cache_size")]
     pub lru_cache_size: usize,
+    /// 规则列表。
     #[serde(skip_serializing_if = "rd_interface::config::detailed_field")]
     pub rule: Vec<RuleItem>,
 }

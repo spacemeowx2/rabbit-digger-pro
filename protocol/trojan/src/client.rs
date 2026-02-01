@@ -62,13 +62,16 @@ impl TrojanNet {
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct WebSocket {
+    /// WebSocket Host 头。
     host: String,
+    /// WebSocket 请求路径。
     path: String,
 }
 
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct TrojanNetConfig {
+    /// 下游连接所使用的 net。
     #[serde(default)]
     net: NetRef,
 
@@ -95,6 +98,7 @@ pub struct TrojanNetConfig {
 
 #[rd_config]
 pub struct TrojancNetConfig {
+    /// 下游连接所使用的 net。
     #[serde(default)]
     net: NetRef,
 

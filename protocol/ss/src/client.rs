@@ -14,14 +14,19 @@ use shadowsocks::{
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct SSNetConfig {
+    /// Shadowsocks 服务器地址。
     pub(crate) server: Address,
+    /// Shadowsocks 密码（明文）。
     #[serde(skip_serializing_if = "rd_interface::config::detailed_field")]
     pub(crate) password: String,
+    /// 是否开启 UDP 转发。
     #[serde(default)]
     pub(crate) udp: bool,
 
+    /// 加密算法。
     pub(crate) cipher: Cipher,
 
+    /// 下游连接所使用的 net。
     #[serde(default)]
     pub(crate) net: NetRef,
 }
