@@ -89,9 +89,12 @@ impl HttpSocks5 {
 #[rd_config]
 #[derive(Debug)]
 pub struct MixedServerConfig {
+    /// 混合代理监听地址。
     bind: Address,
+    /// 监听连接所使用的 net。
     #[serde(default)]
     listen: NetRef,
+    /// 处理请求的上游 net。
     #[serde(default)]
     net: NetRef,
 }

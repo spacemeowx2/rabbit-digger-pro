@@ -14,8 +14,10 @@ mod tests;
 #[rd_config]
 #[derive(Debug)]
 pub struct HttpNetConfig {
+    /// HTTP 代理服务器地址。
     server: Address,
 
+    /// 通过指定 net 进行下游连接。
     #[serde(default)]
     net: NetRef,
 }
@@ -23,18 +25,24 @@ pub struct HttpNetConfig {
 #[rd_config]
 #[derive(Debug)]
 pub struct AuthConfig {
+    /// 用户名。
     username: String,
+    /// 密码。
     password: String,
 }
 
 #[rd_config]
 #[derive(Debug)]
 pub struct HttpServerConfig {
+    /// HTTP 代理监听地址。
     bind: Address,
+    /// 处理请求的上游 net。
     #[serde(default)]
     net: NetRef,
+    /// 监听连接所使用的 net。
     #[serde(default)]
     listen: NetRef,
+    /// 可选的访问认证。
     #[serde(default)]
     auth: Option<AuthConfig>,
 }

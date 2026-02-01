@@ -28,14 +28,18 @@ const POLL_VISIT_PREFIX: &str = "poll_visit";
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct ImportUrl {
+    /// 订阅地址。
     pub url: String,
+    /// 轮询间隔（秒）。
     pub interval: Option<u64>,
 }
 
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct ImportStorage {
+    /// 存储目录名称。
     pub folder: String,
+    /// 存储键名。
     pub key: String,
 }
 
@@ -43,9 +47,13 @@ pub struct ImportStorage {
 #[derive(Debug, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum ImportSource {
+    /// 本地文件路径。
     Path(PathBuf),
+    /// HTTP 订阅地址。
     Poll(ImportUrl),
+    /// 从存储系统读取。
     Storage(ImportStorage),
+    /// 直接使用文本内容。
     Text(String),
 }
 
@@ -226,10 +234,14 @@ impl ImportSource {
 #[rd_config]
 #[derive(Debug, Clone)]
 pub struct Import {
+    /// 可选的导入命名。
     pub name: Option<String>,
+    /// 导入类型标识。
     #[serde(rename = "type")]
     pub format: String,
+    /// 导入来源。
     pub(super) source: ImportSource,
+    /// 导入配置的其他字段。
     #[serde(flatten)]
     pub opt: Value,
 }
