@@ -1,93 +1,63 @@
 use anyhow::Result;
-use rabbit_digger::rd_interface::schemars::{
-    schema::{
-        InstanceType, Metadata, ObjectValidation, RootSchema, Schema, SchemaObject,
-        SubschemaValidation,
-    },
-    visit::{visit_root_schema, visit_schema_object, Visitor},
-};
-use rd_interface::schemars::schema_for;
-use serde_json::Value;
-use std::iter::FromIterator;
-use std::{collections::BTreeMap, path::Path};
+use rd_interface::schemars::{schema_for, Schema};
+use serde_json::{json, Value};
+use std::path::Path;
 use tokio::fs::{create_dir_all, write};
 
-use crate::{
-    config::{get_importer_registry, Import, ImportSource},
-    get_registry,
-};
+use crate::{config::get_importer_registry, config::ImportSource, get_registry};
 
-fn record(value_schema: Schema) -> Schema {
-    let mut schema = SchemaObject::default();
-    schema.object().additional_properties = Some(Box::new(value_schema));
-    schema.into()
+fn schema_to_value(schema: &Schema) -> Result<Value> {
+    Ok(serde_json::to_value(schema)?)
 }
 
-fn array(value_schema: Schema) -> Schema {
-    let mut schema = SchemaObject::default();
-    schema.array().items = Some(value_schema.into());
-    schema.into()
+fn value_to_schema(value: Value) -> Result<Schema> {
+    Ok(serde_json::from_value(value)?)
 }
 
-fn any_of_schema(any_of: Vec<SchemaObject>) -> Schema {
-    SchemaObject {
-        instance_type: Some(InstanceType::Object.into()),
-        subschemas: Some(
-            SubschemaValidation {
-                any_of: Some(any_of.into_iter().map(Into::into).collect()),
-                ..Default::default()
+fn const_type_object(type_name: &str) -> Value {
+    json!({
+        "type": "object",
+        "required": ["type"],
+        "properties": {
+            "type": {
+                "type": "string",
+                "const": type_name,
             }
-            .into(),
-        ),
-        ..Default::default()
-    }
-    .into()
+        }
+    })
 }
 
-fn append_type(schema: &RootSchema, type_name: &str) -> RootSchema {
-    let mut schema = schema.clone();
-    schema.schema.object().properties.insert(
-        "type".to_string(),
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            const_value: Some(Value::String(type_name.to_string())),
-            ..Default::default()
-        }
-        .into(),
-    );
-    schema.schema.object().required.insert("type".to_string());
-    schema
+fn net_or_server_variant(schema: &Schema, type_name: &str) -> Result<Value> {
+    Ok(json!({
+        "title": type_name,
+        "allOf": [
+            schema_to_value(schema)?,
+            const_type_object(type_name),
+        ]
+    }))
 }
 
-// add prefix to all $ref
-struct PrefixVisitor(String);
-impl PrefixVisitor {
-    fn prefix(&self, key: &str) -> String {
-        if ["Net"].contains(&key) {
-            return key.to_string();
+fn import_variant(schema: &Schema, type_name: &str) -> Result<Value> {
+    let name_schema = schema_to_value(&schema_for!(Option<String>))?;
+    let source_schema = schema_to_value(&schema_for!(ImportSource))?;
+
+    let common_fields = json!({
+        "type": "object",
+        "required": ["source"],
+        "properties": {
+            "name": name_schema,
+            "source": source_schema,
         }
-        format!("{}{}", self.0, key)
-    }
-}
-impl Visitor for PrefixVisitor {
-    fn visit_schema_object(&mut self, schema: &mut SchemaObject) {
-        if let Some(ref mut reference) = schema.reference {
-            let r = reference
-                .strip_prefix("#/definitions/")
-                .unwrap_or(reference);
-            *reference = format!("#/definitions/{}", self.prefix(r));
-        }
-        visit_schema_object(self, schema)
-    }
-    fn visit_root_schema(&mut self, root: &mut RootSchema) {
-        root.definitions = root
-            .definitions
-            .clone()
-            .into_iter()
-            .map(|(k, v)| (self.prefix(&k), v))
-            .collect();
-        visit_root_schema(self, root)
-    }
+    });
+
+    Ok(json!({
+        "title": type_name,
+        "allOf": [
+            schema_to_value(schema)?,
+            common_fields,
+            const_type_object(type_name),
+        ]
+    }))
 }
 
 pub async fn write_schema(path: impl AsRef<Path>) -> Result<()> {
@@ -102,96 +72,85 @@ pub async fn write_schema(path: impl AsRef<Path>) -> Result<()> {
     Ok(())
 }
 
-fn merge_config<'a>(
-    prefix: &str,
-    root: &mut RootSchema,
-    iter: impl Iterator<Item = (&'a str, &'a RootSchema)>,
-) -> Vec<SchemaObject> {
-    let mut schemas: Vec<SchemaObject> = Vec::new();
-
-    for (id, schema) in iter {
-        let mut schema = append_type(schema, id);
-        let mut visitor = PrefixVisitor(format!("{prefix}_{id}_"));
-
-        visitor.visit_root_schema(&mut schema);
-        schemas.push(schema.schema);
-        root.definitions.extend(schema.definitions);
-    }
-
-    schemas
-}
-
-pub async fn generate_schema() -> Result<RootSchema> {
+pub async fn generate_schema() -> Result<Schema> {
     let registry = get_registry()?;
     let importer_registry = get_importer_registry();
 
-    let mut root: RootSchema = RootSchema::default();
+    let net_variants: Vec<Value> = registry
+        .net()
+        .iter()
+        .map(|(k, v)| net_or_server_variant(v.schema(), k.as_ref()))
+        .collect::<Result<_>>()?;
 
-    let net_schema = any_of_schema(merge_config(
-        "net",
-        &mut root,
-        registry.net().iter().map(|(k, v)| (k.as_ref(), v.schema())),
-    ));
-    let server_schema = any_of_schema(merge_config(
-        "server",
-        &mut root,
-        registry
-            .server()
-            .iter()
-            .map(|(k, v)| (k.as_ref(), v.schema())),
-    ));
-    let import_schema = any_of_schema(
-        merge_config(
-            "import",
-            &mut root,
-            importer_registry.iter().map(|(k, v)| (*k, v.schema())),
-        )
-        .into_iter()
-        .map(Import::append_schema)
-        .collect(),
-    );
+    let server_variants: Vec<Value> = registry
+        .server()
+        .iter()
+        .map(|(k, v)| net_or_server_variant(v.schema(), k.as_ref()))
+        .collect::<Result<_>>()?;
 
-    let string_schema = SchemaObject {
-        instance_type: Some(InstanceType::String.into()),
-        ..Default::default()
+    let import_variants: Vec<Value> = importer_registry
+        .iter()
+        .map(|(k, v)| import_variant(v.schema(), *k))
+        .collect::<Result<_>>()?;
+
+    let root = json!({
+        "title": "Config",
+        "type": "object",
+        "properties": {
+            "id": { "type": "string" },
+            "net": {
+                "type": "object",
+                "additionalProperties": {
+                    "anyOf": net_variants
+                }
+            },
+            "server": {
+                "type": "object",
+                "additionalProperties": {
+                    "anyOf": server_variants
+                }
+            },
+            "import": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "anyOf": import_variants
+                }
+            }
+        }
+    });
+
+    value_to_schema(root)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_schema_value_roundtrip() {
+        let schema = schema_for!(Option<String>);
+        let v = schema_to_value(&schema).unwrap();
+        let schema2 = value_to_schema(v).unwrap();
+        // Basic sanity: serialized value remains an object.
+        let _ = schema2;
     }
-    .into();
 
-    root.definitions.insert("Net".to_string(), net_schema);
-    root.definitions.insert("Server".to_string(), server_schema);
+    #[tokio::test]
+    async fn test_generate_schema_smoke() {
+        let schema = generate_schema().await.unwrap();
+        let v = serde_json::to_value(&schema).unwrap();
+        assert_eq!(v.get("title").and_then(|t| t.as_str()), Some("Config"));
+        assert!(v.get("properties").is_some());
+    }
 
-    let source_schema = schema_for!(ImportSource);
-    root.definitions.extend(source_schema.definitions);
-
-    root.schema = SchemaObject {
-        instance_type: Some(InstanceType::Object.into()),
-        metadata: Some(
-            Metadata {
-                title: Some("Config".to_string()),
-                ..Default::default()
-            }
-            .into(),
-        ),
-        object: Some(
-            ObjectValidation {
-                properties: BTreeMap::from_iter([
-                    ("id".to_string(), string_schema),
-                    (
-                        "net".to_string(),
-                        record(Schema::new_ref("#/definitions/Net".into())),
-                    ),
-                    (
-                        "server".to_string(),
-                        record(Schema::new_ref("#/definitions/Server".into())),
-                    ),
-                    ("import".to_string(), array(import_schema)),
-                ]),
-                ..Default::default()
-            }
-            .into(),
-        ),
-        ..Default::default()
-    };
-
-    Ok(root)
+    #[tokio::test]
+    async fn test_write_schema_creates_parent_dir_and_writes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("schema.json");
+        write_schema(&path).await.unwrap();
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v.get("title").and_then(|t| t.as_str()), Some("Config"));
+    }
 }

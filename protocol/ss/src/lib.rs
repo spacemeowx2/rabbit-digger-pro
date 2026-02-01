@@ -15,7 +15,7 @@ impl Builder<Net> for SSNet {
     type Item = Self;
 
     fn build(config: Self::Config) -> Result<Self> {
-        Ok(SSNet::new(config))
+        SSNet::new(config)
     }
 }
 
@@ -25,7 +25,7 @@ impl Builder<Server> for SSServer {
     type Item = Self;
 
     fn build(cfg: Self::Config) -> Result<Self> {
-        Ok(SSServer::new(cfg))
+        SSServer::new(cfg)
     }
 }
 

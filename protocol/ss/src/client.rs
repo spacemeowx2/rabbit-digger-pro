@@ -35,18 +35,21 @@ pub struct SSNet {
 }
 
 impl SSNet {
-    pub fn new(config: SSNetConfig) -> SSNet {
-        SSNet {
+    pub fn new(config: SSNetConfig) -> Result<SSNet> {
+        let cfg = ServerConfig::new(
+            (config.server.host(), config.server.port()),
+            config.password,
+            config.cipher.into(),
+        )
+        .map_err(rd_interface::error::map_other)?;
+
+        Ok(SSNet {
             context: Context::new_shared(ServerType::Local),
             addr: config.server.clone(),
-            cfg: ServerConfig::new(
-                (config.server.host(), config.server.port()),
-                config.password,
-                config.cipher.into(),
-            ),
+            cfg,
             udp: config.udp,
             net: config.net.value_cloned(),
-        }
+        })
     }
 }
 
@@ -127,6 +130,7 @@ mod tests {
             cipher: Cipher::AES_128_CCM,
             net: NetRef::new_with_value("test".into(), net),
         })
+        .unwrap()
         .into_dyn();
 
         assert_net_provider(

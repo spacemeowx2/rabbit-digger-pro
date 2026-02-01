@@ -3,7 +3,7 @@
 use rd_interface::{
     error::ErrorContext,
     registry::{NetGetter, Resolver},
-    schemars::schema::RootSchema,
+    schemars::Schema,
     Net, Result, Server, Value,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ pub struct Item<T> {
 }
 
 impl<T> Item<T> {
-    pub fn schema(&self) -> &RootSchema {
+    pub fn schema(&self) -> &Schema {
         self.resolver.schema()
     }
 }
@@ -172,8 +172,8 @@ impl Registry {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegistrySchema {
-    net: BTreeMap<String, RootSchema>,
-    server: BTreeMap<String, RootSchema>,
+    net: BTreeMap<String, Schema>,
+    server: BTreeMap<String, Schema>,
 }
 
 #[cfg(test)]

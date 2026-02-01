@@ -13,7 +13,7 @@ use tokio_smoltcp::{
     smoltcp::{phy::Checksum, wire::IpAddress},
 };
 use tokio_util::codec::Framed;
-use tun_crate::{create_as_async, Configuration, Device, TunPacket, TunPacketCodec};
+use tun_crate::{create_as_async, AbstractDevice, Configuration, TunPacketCodec};
 
 pub struct TunAsyncDevice {
     device_name: String,
@@ -37,11 +37,11 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<TunAsyncDevice> {
         .up();
 
     if let Some(name) = &cfg.name {
-        config.name(name);
+        config.tun_name(name);
     }
 
     let dev = create_as_async(&config).map_err(map_other)?;
-    let device_name = dev.get_ref().name().to_string();
+    let device_name = dev.tun_name().map_err(map_other)?;
     let dev = dev.into_framed();
 
     tracing::info!("tun created: {}", device_name);
@@ -68,7 +68,8 @@ impl Stream for TunAsyncDevice {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let p = ready!(self.dev.poll_next_unpin(cx));
 
-        Poll::Ready(p.map(|i| i.map(|p| p.get_bytes().to_vec())))
+        // TunPacketCodec yields Vec<u8>
+        Poll::Ready(p.map(|i| i.map(|p| p)))
     }
 }
 
@@ -80,7 +81,7 @@ impl Sink<Packet> for TunAsyncDevice {
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Packet) -> Result<(), Self::Error> {
-        self.dev.start_send_unpin(TunPacket::new(item))
+        self.dev.start_send_unpin(item)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

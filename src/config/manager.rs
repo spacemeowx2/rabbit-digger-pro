@@ -132,3 +132,106 @@ impl Inner {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::time::Duration;
+
+    fn minimal_yaml() -> String {
+        r#"
+id: test
+net: {}
+server: {}
+"#
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_config_stream_yields_config_and_sets_id_from_cache_key() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let s = mgr
+            .config_stream(ImportSource::Text(minimal_yaml()))
+            .await
+            .unwrap();
+        futures::pin_mut!(s);
+
+        let cfg = s.next().await.unwrap().unwrap();
+        assert_eq!(cfg.id, "text");
+    }
+
+    #[tokio::test]
+    async fn test_config_stream_from_sources_no_source_is_error() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let r = mgr
+            .config_stream_from_sources(futures::stream::empty())
+            .await;
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_inner_wait_source_poll_returns_immediately_when_no_timestamps() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let source = ImportSource::new_poll("http://example.invalid".to_string(), Some(0));
+
+        let t = tokio::time::timeout(Duration::from_secs(1), mgr.inner.wait_source(&source, &[]))
+            .await
+            .unwrap();
+        t.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_config_applies_merge_import() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let source = ImportSource::Text(
+            r#"
+id: base
+net: {}
+server: {}
+import:
+  - type: merge
+    source:
+      text: |
+        id: other
+        net:
+          n1:
+            type: alias
+            net: local
+        server: {}
+"#
+            .to_string(),
+        );
+
+        let (cfg, _imports) = mgr
+            .inner
+            .deserialize_config_from_source(&source)
+            .await
+            .unwrap();
+        assert!(cfg.net.contains_key("n1"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_config_import_error_has_context() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let source = ImportSource::Text(
+            r#"
+id: base
+net: {}
+server: {}
+import:
+  - type: merge
+    source:
+      text: "not-yaml: ["
+"#
+            .to_string(),
+        );
+
+        let err = mgr
+            .inner
+            .deserialize_config_from_source(&source)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("applying import"));
+    }
+}

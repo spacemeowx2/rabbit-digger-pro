@@ -7,7 +7,7 @@ use rd_interface::{
 };
 use shadowsocks::{
     context::SharedContext,
-    crypto::v1::CipherKind,
+    crypto::CipherKind,
     relay::{socks5::Address as SSAddress, tcprelay::crypto_io},
     ProxyClientStream, ServerConfig,
 };
@@ -233,9 +233,20 @@ impl IUdpSocket for WrapSSUdp {
 pub struct CryptoStream<S>(crypto_io::CryptoStream<S>, SharedContext);
 
 impl<S> CryptoStream<S> {
-    pub fn from_stream(context: SharedContext, stream: S, method: CipherKind, key: &[u8]) -> Self {
+    pub fn from_server_stream(
+        context: SharedContext,
+        stream: S,
+        method: CipherKind,
+        key: &[u8],
+    ) -> Self {
         CryptoStream(
-            crypto_io::CryptoStream::<S>::from_stream(&context, stream, method, key),
+            crypto_io::CryptoStream::<S>::from_stream(
+                &context,
+                stream,
+                crypto_io::StreamType::Server,
+                method,
+                key,
+            ),
             context,
         )
     }
@@ -251,7 +262,7 @@ where
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let CryptoStream(s, c) = Pin::get_mut(self);
-        s.poll_read_decrypted(cx, c, buf)
+        crypto_io::CryptoRead::poll_read_decrypted(Pin::new(s), cx, c, buf).map_err(Into::into)
     }
 }
 
@@ -264,20 +275,21 @@ where
         cx: &mut task::Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        self.0.poll_write_encrypted(cx, buf)
+        crypto_io::CryptoWrite::poll_write_encrypted(Pin::new(&mut self.0), cx, buf)
+            .map_err(Into::into)
     }
 
     fn poll_flush(
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        self.0.poll_flush(cx)
+        self.0.poll_flush(cx).map_err(Into::into)
     }
 
     fn poll_shutdown(
         mut self: Pin<&mut Self>,
         cx: &mut task::Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        self.0.poll_shutdown(cx)
+        self.0.poll_shutdown(cx).map_err(Into::into)
     }
 }

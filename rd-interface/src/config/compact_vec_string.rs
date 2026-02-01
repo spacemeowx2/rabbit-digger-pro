@@ -48,7 +48,7 @@ impl CompactVecString {
         self.underlying.shrink_to_fit();
         self.index.shrink_to_fit();
     }
-    pub fn iter(&self) -> Iter {
+    pub fn iter(&self) -> Iter<'_> {
         Iter {
             inner: self,
             index: 0,
@@ -197,11 +197,11 @@ impl<'de> Deserialize<'de> for CompactVecString {
 }
 
 impl JsonSchema for CompactVecString {
-    fn schema_name() -> String {
-        "StringList".to_string()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("StringList")
     }
 
-    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         gen.subschema_for::<super::SingleOrVec<String>>()
     }
 }

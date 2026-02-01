@@ -39,3 +39,22 @@ impl Default for LogWriter {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_log_writer_broadcasts() {
+        let mut rx = get_sender().subscribe();
+        let mut w = LogWriter::new();
+        let n = w.write(b"hello").unwrap();
+        assert_eq!(n, 5);
+
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&*msg, b"hello");
+    }
+}

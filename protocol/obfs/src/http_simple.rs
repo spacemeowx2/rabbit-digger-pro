@@ -9,6 +9,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use futures::ready;
 use pin_project_lite::pin_project;
 use rand::prelude::*;
+use rand::rng;
 use rd_interface::{
     async_trait, prelude::*, rd_config, Address, AsyncWrite, ITcpStream, IntoDyn, ReadBuf, Result,
     TcpStream, NOT_IMPLEMENTED,
@@ -129,10 +130,10 @@ impl ITcpStream for Connect {
         loop {
             match &mut self.write {
                 WriteState::Wait => {
-                    let major = thread_rng().next_u32() % 51;
-                    let minor = thread_rng().next_u32() % 2;
+                    let major = rng().next_u32() % 51;
+                    let minor = rng().next_u32() % 2;
 
-                    let key_bytes: [u8; 16] = thread_rng().gen();
+                    let key_bytes: [u8; 16] = rng().random();
                     let key = STANDARD.encode(key_bytes);
 
                     let mut cursor = Cursor::new(Vec::<u8>::with_capacity(1024));

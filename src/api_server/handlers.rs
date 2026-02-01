@@ -7,9 +7,10 @@ use std::{
 };
 
 use axum::{
+    body::Bytes,
     extract::{
         ws::{Message, WebSocket},
-        Extension, Path, Query, RawBody, WebSocketUpgrade,
+        Extension, Path, Query, WebSocketUpgrade,
     },
     http::HeaderValue,
     response::{IntoResponse, Response},
@@ -21,6 +22,7 @@ use rabbit_digger::{RabbitDigger, Uuid};
 use rd_interface::{IntoAddress, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::{pin, time::interval};
 use tokio_stream::wrappers::IntervalStream;
 
@@ -189,21 +191,38 @@ pub(super) async fn get_delay(
         (Some(net), Some(host), Some(port)) => {
             let start = Instant::now();
             let fut = async {
-                let socket = net
+                let mut socket = net
                     .tcp_connect(
                         &mut rd_interface::Context::new(),
                         &(host, port).into_address()?,
                     )
                     .await?;
                 let connect = start.elapsed().as_millis() as u64;
-                let (mut request_sender, connection) =
-                    hyper::client::conn::handshake(socket).await?;
-                let connect_req = hyper::Request::builder()
-                    .method("GET")
-                    .uri(url.path())
-                    .body(hyper::Body::empty())?;
-                tokio::spawn(connection);
-                let _connect_resp = request_sender.send_request(connect_req).await?;
+
+                let host_header = match url.port_or_known_default() {
+                    Some(p) => format!("{}:{}", host, p),
+                    None => host.to_string(),
+                };
+                let mut path_and_query = url.path().to_string();
+                if path_and_query.is_empty() {
+                    path_and_query = "/".to_string();
+                }
+                if let Some(q) = url.query() {
+                    path_and_query.push('?');
+                    path_and_query.push_str(q);
+                }
+                let req = format!(
+                    "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n",
+                    path = path_and_query,
+                    host = host_header
+                );
+                socket.write_all(req.as_bytes()).await?;
+                socket.flush().await?;
+
+                // Read 1 byte to ensure server responded.
+                let mut one = [0u8; 1];
+                socket.read_exact(&mut one).await?;
+
                 let response = start.elapsed().as_millis() as u64;
                 anyhow::Result::<DelayResponse>::Ok(DelayResponse { connect, response })
             };
@@ -233,9 +252,8 @@ pub(super) async fn get_userdata(
 pub(super) async fn put_userdata(
     Extension(Ctx { userdata, .. }): Extension<Ctx>,
     Path(tail): Path<String>,
-    RawBody(body): RawBody,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    let body = hyper::body::to_bytes(body).await.map_err(ApiError::other)?;
     userdata
         .set(tail.as_str(), from_utf8(&body).map_err(ApiError::other)?)
         .await?;
@@ -324,7 +342,7 @@ pub(super) async fn ws_conn(
                 (_, Err(e)) => Err(e),
             }))
         })
-        .map_ok(|p| Message::Text(serde_json::to_string(&p).unwrap()));
+        .map_ok(|p| Message::Text(serde_json::to_string(&p).unwrap().into()));
     Ok(ws.on_upgrade(move |ws| async move {
         if let Err(e) = forward(stream, ws).await {
             tracing::error!("WebSocket event error: {:?}", e)
@@ -337,7 +355,9 @@ pub(super) async fn ws_log(ws: WebSocketUpgrade) -> Result<impl IntoResponse, Ap
         let mut recv = crate::log::get_sender().subscribe();
         while let Ok(content) = recv.recv().await {
             if let Err(e) = ws
-                .send(Message::Text(String::from_utf8_lossy(&content).to_string()))
+                .send(Message::Text(
+                    String::from_utf8_lossy(&content).to_string().into(),
+                ))
                 .await
             {
                 tracing::error!("WebSocket event error: {:?}", e);

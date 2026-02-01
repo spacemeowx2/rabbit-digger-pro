@@ -29,7 +29,7 @@ async fn test_ss_server_client() {
         udp: true,
         cipher: Cipher::AES_128_GCM,
     };
-    let server = server::SSServer::new(server_cfg);
+    let server = server::SSServer::new(server_cfg).unwrap();
     tokio::spawn(async move { server.start().await });
 
     sleep(Duration::from_secs(1)).await;
@@ -41,7 +41,7 @@ async fn test_ss_server_client() {
         cipher: Cipher::AES_128_GCM,
         net: NetRef::new_with_value(Value::String("local".to_string()), local.clone()),
     };
-    let client = client::SSNet::new(client_cfg).into_dyn();
+    let client = client::SSNet::new(client_cfg).unwrap().into_dyn();
 
     assert_echo(&client, "127.0.0.1:26666").await;
     assert_echo_udp(&client, "127.0.0.1:26666").await;

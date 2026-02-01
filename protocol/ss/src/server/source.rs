@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use futures::ready;
 use rd_interface::UdpSocket;
 use rd_std::util::forward_udp::{RawUdpSource, UdpEndpoint};
-use shadowsocks::crypto::v1::CipherKind;
+use shadowsocks::crypto::CipherKind;
 use socks5_protocol::Address as S5Addr;
 
 use crate::udp::{decrypt_payload, encrypt_payload};

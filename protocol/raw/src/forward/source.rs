@@ -89,7 +89,7 @@ impl RawUdpSource for Source {
 }
 
 /// buf is a ip packet
-fn parse_udp(buf: &[u8]) -> smoltcp::Result<(SocketAddr, SocketAddr, Vec<u8>)> {
+fn parse_udp(buf: &[u8]) -> smoltcp::wire::Result<(SocketAddr, SocketAddr, Vec<u8>)> {
     let ipv4 = Ipv4Packet::new_checked(buf)?;
     let udp = UdpPacket::new_checked(ipv4.payload())?;
 
@@ -111,7 +111,7 @@ fn pack_udp(src: SocketAddr, dst: SocketAddr, payload: &[u8]) -> Option<Vec<u8>>
             let ipv4_repr = Ipv4Repr {
                 src_addr: Ipv4Address::from(*src_v4.ip()),
                 dst_addr: Ipv4Address::from(*dst_v4.ip()),
-                protocol: IpProtocol::Udp,
+                next_header: IpProtocol::Udp,
                 payload_len: udp_repr.header_len() + payload.len(),
                 hop_limit: 64,
             };

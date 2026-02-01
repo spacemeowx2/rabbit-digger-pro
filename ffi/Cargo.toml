@@ -24,7 +24,7 @@ tracing-subscriber = { version = "0.3.7", features = [
 tracing = "0.1.26"
 
 [build-dependencies]
-cbindgen = "0.20.0"
+cbindgen = "0.29.2"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

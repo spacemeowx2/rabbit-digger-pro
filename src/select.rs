@@ -93,4 +93,16 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_select_net_new_rejects_empty_list() {
+        let net = NetRef::new_with_value("test".into(), rd_std::tests::TestNet::new().into_dyn());
+        let err = SelectNet::new(SelectNetConfig {
+            selected: net,
+            list: vec![],
+        })
+        .err()
+        .unwrap();
+        assert!(matches!(err, Error::Other(s) if s.to_string().contains("select list is empty")));
+    }
 }

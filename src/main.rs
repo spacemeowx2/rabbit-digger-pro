@@ -133,11 +133,10 @@ async fn main() -> Result<()> {
 
     cfg_if! {
         if #[cfg(feature = "telemetry")] {
-            let tracer = opentelemetry_jaeger::new_pipeline()
-                .with_service_name("rabbit_digger_pro")
-                .install_batch(opentelemetry::runtime::Tokio)?;
-            // only for debug
-            // let tracer = opentelemetry::sdk::export::trace::stdout::new_pipeline().install_simple();
+            // NOTE: Jaeger agent pipeline was removed because it depends on an old
+            // opentelemetry version and breaks the dependency graph after upgrades.
+            // This keeps telemetry wiring compiling (noop tracer by default).
+            let tracer = opentelemetry::global::tracer("rabbit_digger_pro");
             let tracer_filter =
                 EnvFilter::new("rabbit_digger=trace,rabbit_digger_pro=trace,rd_std=trace");
             let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);

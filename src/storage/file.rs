@@ -216,3 +216,53 @@ impl Storage for FileStorage {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_folder(prefix: &str) -> String {
+        format!("{prefix}-{}", Uuid::new_v4())
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_set_get_remove_clear() {
+        let folder = unique_folder("file_storage");
+        let storage = FileStorage::new(FolderType::Cache, &folder).await.unwrap();
+
+        // Empty value should be ignored.
+        storage.set("k0", "").await.unwrap();
+        assert!(storage.get("k0").await.unwrap().is_none());
+
+        storage.set("k1", "v1").await.unwrap();
+        let item = storage.get("k1").await.unwrap().unwrap();
+        assert_eq!(item.content, "v1");
+
+        let keys = storage.keys().await.unwrap();
+        assert!(keys.iter().any(|k| k.key == "k1"));
+
+        storage.remove("k1").await.unwrap();
+        assert!(storage.get("k1").await.unwrap().is_none());
+
+        storage.set("k2", "v2").await.unwrap();
+        storage.clear().await.unwrap();
+        assert!(storage.keys().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_storage_recovers_from_corrupted_index() {
+        let folder = unique_folder("corrupt_index");
+        let storage_dir = FolderType::Cache.path(&folder).unwrap();
+        let index_path = storage_dir.join("index.json");
+
+        // Initialize once.
+        let _ = FileStorage::new(FolderType::Cache, &folder).await.unwrap();
+
+        // Corrupt the index.
+        tokio::fs::write(&index_path, b"not-json").await.unwrap();
+
+        // Should recover by deleting and recreating the index.
+        let storage = FileStorage::new(FolderType::Cache, &folder).await.unwrap();
+        assert!(storage.get_index().await.is_ok());
+    }
+}

@@ -2,15 +2,15 @@ use std::net::SocketAddr;
 
 use rd_derive::rd_config;
 use rd_interface::{
-    async_trait, config::NetRef, prelude::*, registry::Builder, Address, Error, INet, IntoDyn, Net,
-    Result,
+    async_trait, config::NetRef, prelude::*, registry::Builder, Address, INet, IntoDyn, Net, Result,
 };
 use trust_dns_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
+    name_server::GenericConnector,
     AsyncResolver,
 };
 
-use self::rd_runtime::{RDConnection, RDConnectionProvider, RDHandle};
+use self::rd_runtime::RDRuntime;
 
 use super::local::{LocalNet, LocalNetConfig};
 
@@ -33,29 +33,29 @@ pub struct DnsConfig {
 }
 
 pub struct DnsNet {
-    net: Net,
-    resolver: AsyncResolver<RDConnection, RDConnectionProvider>,
+    resolver: AsyncResolver<GenericConnector<RDRuntime>>,
 }
 
 #[async_trait]
 impl rd_interface::LookupHost for DnsNet {
     async fn lookup_host(&self, addr: &Address) -> Result<Vec<SocketAddr>> {
         // TODO: is it cheap?
-        let r = self.resolver.clone();
-        rd_runtime::NET
-            .scope(self.net.clone(), async move {
-                addr.resolve(move |host, port| async move {
-                    let response = r.lookup_ip(host).await?;
-
-                    Ok(response
-                        .into_iter()
-                        .map(|ip| SocketAddr::new(ip, port))
-                        .collect())
-                })
+        let resolver = self.resolver.clone();
+        addr.resolve(move |host, port| async move {
+            let response = resolver
+                .lookup_ip(host)
                 .await
-                .map_err(Into::into)
-            })
-            .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+            let addrs: Vec<SocketAddr> = response
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, port))
+                .collect();
+
+            Ok(addrs)
+        })
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -90,11 +90,10 @@ impl Builder<Net> for DnsNet {
         let resolver = AsyncResolver::new(
             resolver_config,
             ResolverOpts::default(),
-            RDHandle(net.clone()),
-        )
-        .map_err(|e| Error::other(format!("Failed to build resolver: {e:?}")))?;
+            GenericConnector::new(RDRuntime { net: net.clone() }),
+        );
 
-        Ok(Self { resolver, net })
+        Ok(Self { resolver })
     }
 }
 
@@ -103,7 +102,7 @@ fn nameserver_config(socket_addr: SocketAddr) -> NameServerConfig {
         socket_addr,
         protocol: Protocol::Udp,
         tls_dns_name: None,
-        trust_nx_responses: false,
+        trust_negative_responses: false,
         bind_addr: None,
     }
 }
@@ -119,8 +118,8 @@ mod rd_runtime {
     use futures::{ready, Future, TryFutureExt};
     use parking_lot::Mutex;
     use trust_dns_resolver::{
-        name_server::{GenericConnection, GenericConnectionProvider, RuntimeProvider, Spawn},
-        proto::{error::ProtoError, iocompat::AsyncIoTokioAsStd, udp::UdpSocket, TokioTime},
+        name_server::{RuntimeProvider, Spawn},
+        proto::{error::ProtoError, iocompat::AsyncIoTokioAsStd, udp::DnsUdpSocket, TokioTime},
     };
 
     tokio::task_local! {
@@ -156,20 +155,8 @@ mod rd_runtime {
     }
 
     #[async_trait]
-    impl UdpSocket for RDUdpSocket {
+    impl DnsUdpSocket for RDUdpSocket {
         type Time = TokioTime;
-
-        async fn bind(addr: SocketAddr) -> io::Result<Self> {
-            let net = NET.with(Clone::clone);
-            let fut = async move {
-                net.udp_bind(&mut rd_interface::Context::new(), &addr.into())
-                    .map_err(|e| e.to_io_err())
-                    .await
-            };
-            Ok(RDUdpSocket {
-                inner: Mutex::new(Inner::Connecting(Box::pin(fut))),
-            })
-        }
 
         fn poll_recv_from(
             &self,
@@ -211,16 +198,50 @@ mod rd_runtime {
         }
     }
 
-    #[derive(Clone, Copy)]
-    pub struct RDRuntime;
+    #[derive(Clone)]
+    pub struct RDRuntime {
+        pub(super) net: Net,
+    }
+
     impl RuntimeProvider for RDRuntime {
         type Handle = RDHandle;
         type Tcp = AsyncIoTokioAsStd<tokio::net::TcpStream>;
         type Timer = TokioTime;
         type Udp = RDUdpSocket;
+
+        fn create_handle(&self) -> Self::Handle {
+            RDHandle(self.net.clone())
+        }
+
+        fn connect_tcp(
+            &self,
+            server_addr: SocketAddr,
+        ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Tcp>>>> {
+            Box::pin(async move {
+                let stream = tokio::net::TcpStream::connect(server_addr).await?;
+                Ok(AsyncIoTokioAsStd(stream))
+            })
+        }
+
+        fn bind_udp(
+            &self,
+            local_addr: SocketAddr,
+            _server_addr: SocketAddr,
+        ) -> Pin<Box<dyn Send + Future<Output = io::Result<Self::Udp>>>> {
+            let net = self.net.clone();
+            Box::pin(async move {
+                let fut = async move {
+                    net.udp_bind(&mut rd_interface::Context::new(), &local_addr.into())
+                        .map_err(|e| e.to_io_err())
+                        .await
+                };
+
+                Ok(RDUdpSocket {
+                    inner: Mutex::new(Inner::Connecting(Box::pin(fut))),
+                })
+            })
+        }
     }
-    pub type RDConnection = GenericConnection;
-    pub type RDConnectionProvider = GenericConnectionProvider<RDRuntime>;
 }
 
 #[cfg(test)]

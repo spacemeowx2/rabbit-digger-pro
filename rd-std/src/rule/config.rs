@@ -1,14 +1,11 @@
-use std::{fmt, str::FromStr};
+use std::{borrow::Cow, fmt, str::FromStr};
 
 use super::matcher::{self, MatchContext};
 use rd_interface::{
     config::{CompactVecString, NetRef, SingleOrVec},
     impl_empty_config,
     prelude::*,
-    schemars::{
-        schema::{InstanceType, SchemaObject},
-        JsonSchema,
-    },
+    schemars::JsonSchema,
 };
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use smoltcp::wire;
@@ -78,17 +75,17 @@ pub struct GeoIpMatcher {
 }
 
 impl JsonSchema for IpCidr {
-    fn schema_name() -> String {
-        "IpCidr".to_string()
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("IpCidr")
     }
 
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        SchemaObject {
-            instance_type: Some(InstanceType::String.into()),
-            format: None,
-            ..Default::default()
-        }
-        .into()
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "type".to_string(),
+            serde_json::Value::String("string".to_string()),
+        );
+        schemars::Schema::from(obj)
     }
 }
 

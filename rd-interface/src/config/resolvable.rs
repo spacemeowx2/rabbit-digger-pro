@@ -1,4 +1,4 @@
-use std::{fmt, ops::Deref};
+use std::{borrow::Cow, fmt, ops::Deref};
 
 use schemars::JsonSchema;
 use serde::{de, ser};
@@ -115,15 +115,11 @@ impl<S> JsonSchema for Resolvable<S>
 where
     S: ResolvableSchema + JsonSchema,
 {
-    fn is_referenceable() -> bool {
-        S::is_referenceable()
-    }
-
-    fn schema_name() -> String {
+    fn schema_name() -> Cow<'static, str> {
         S::schema_name()
     }
 
-    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         S::json_schema(gen)
     }
 }
