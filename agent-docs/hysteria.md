@@ -16,8 +16,8 @@
 - [x] 1. 阅读 HY2 docs 并沉淀要点
 - [x] 2. 添加本地 server 配置/脚本并启动验证
 - [x] 3. 实现 HY2 client：QUIC + `/auth` + TCP CONNECT(stream)
-- [ ] 4. 实现 HY2 client：UDP(datagram) + Salamander(可选)（进行中）
-- [ ] 5. 接入到 registry/feature，补最小测试与使用说明
+- [x] 4. 实现 HY2 client：UDP(datagram) + Salamander(可选)
+- [x] 5. 接入到 registry/feature，补最小测试与使用说明
 
 ---
 
