@@ -1,0 +1,10 @@
+listen: 127.0.0.1:18443
+
+tls:
+  cert: agent-docs/hysteria/cert.pem
+  key: agent-docs/hysteria/key.pem
+
+auth:
+  type: password
+  password: test-password
+
