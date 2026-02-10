@@ -3,7 +3,10 @@ use rd_interface::{registry::Builder, Net, Registry, Result};
 
 mod client;
 mod codec;
+mod salamander;
 mod stream;
+mod transport;
+mod udp;
 
 impl Builder<Net> for HysteriaNet {
     const NAME: &'static str = "hysteria";

@@ -2,6 +2,18 @@ use rd_interface::Address;
 
 pub(crate) const HY2_TCP_REQUEST: u64 = 0x401;
 
+pub(crate) fn varint_len(x: u64) -> usize {
+    if x < (1 << 6) {
+        1
+    } else if x < (1 << 14) {
+        2
+    } else if x < (1 << 30) {
+        4
+    } else {
+        8
+    }
+}
+
 pub(crate) fn write_varint(out: &mut Vec<u8>, mut x: u64) {
     // QUIC variable-length integer encoding
     // 00: 1 byte, 01: 2 bytes, 10: 4 bytes, 11: 8 bytes

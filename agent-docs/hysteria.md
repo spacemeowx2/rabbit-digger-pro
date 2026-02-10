@@ -15,8 +15,8 @@
 
 - [x] 1. 阅读 HY2 docs 并沉淀要点
 - [x] 2. 添加本地 server 配置/脚本并启动验证
-- [ ] 3. 实现 HY2 client：QUIC + `/auth` + TCP CONNECT(stream)（进行中）
-- [ ] 4. 实现 HY2 client：UDP(datagram) + Salamander(可选)
+- [x] 3. 实现 HY2 client：QUIC + `/auth` + TCP CONNECT(stream)
+- [ ] 4. 实现 HY2 client：UDP(datagram) + Salamander(可选)（进行中）
 - [ ] 5. 接入到 registry/feature，补最小测试与使用说明
 
 ---
@@ -76,6 +76,8 @@
 - 2026-02-10：创建跟踪文档，完成协议/配置要点摘录（进行中）
 - 2026-02-10：新增本地联调用 server 配置与证书生成脚本：`agent-docs/hysteria/`
 - 2026-02-10：新增 `protocol/hysteria`：完成 HY2 `/auth` + TCP stream request 的最小实现（编译/单测通过）
+- 2026-02-10：`protocol/hysteria` 增加 UDP(datagram) 与 Salamander(传输层混淆) 支持（编译/单测通过）
+- 2026-02-10：本地联调验证：`rabbit-digger-pro` 通过 HY2(TCP) 成功代理访问本机 `python -m http.server`（socks5 -> rdp -> hysteria server -> localhost 目标）
 
 ---
 
@@ -91,6 +93,8 @@ net:
     server_name: localhost
     auth: test-password
     ca_pem: agent-docs/hysteria/cert.pem
+    # udp: true
+    # salamander: my-shared-key
 
 server:
   mixed:

@@ -16,6 +16,10 @@ bytes = "1"
 futures-util = "0.3.31"
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
+blake2 = "0.10"
+rand = "0.8"
+parking_lot = "0.12"
+tokio-stream = { version = "0.1.18", features = ["sync"] }
 
 [dev-dependencies]
 rd-std = { path = "../../rd-std", version = "0.1" }

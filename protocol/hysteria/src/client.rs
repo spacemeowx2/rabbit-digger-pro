@@ -7,11 +7,11 @@ use http::{Request, StatusCode};
 use quinn::crypto::rustls::QuicClientConfig;
 use rd_interface::{
     async_trait, error::map_other, prelude::*, registry::NetRef, Address, Error, INet, IntoDyn,
-    Net, Result, TcpStream,
+    Net, Result, TcpStream, UdpSocket,
 };
 use tokio::sync::OnceCell;
 
-use crate::{codec::write_tcp_request, stream::Hy2Stream};
+use crate::{codec::write_tcp_request, stream::Hy2Stream, transport, udp::Hy2Udp};
 
 #[rd_config]
 #[derive(Debug, Clone)]
@@ -26,6 +26,14 @@ pub struct HysteriaNetConfig {
     /// Trust additional CA cert(s) for the server (PEM).
     #[serde(default)]
     pub(crate) ca_pem: Option<String>,
+
+    /// Local bind address for QUIC (e.g. `[::]:0`).
+    #[serde(default)]
+    pub(crate) bind: Option<String>,
+
+    /// Enable Salamander obfuscation (shared key).
+    #[serde(default)]
+    pub(crate) salamander: Option<String>,
 
     #[serde(default)]
     pub(crate) udp: bool,
@@ -48,6 +56,7 @@ struct Hy2Client {
     conn: quinn::Connection,
     _h3_driver: tokio::task::JoinHandle<()>,
     _h3_send: SendRequest<h3_quinn::OpenStreams, Bytes>,
+    udp: Option<Arc<Hy2Udp>>,
 }
 
 impl HysteriaNet {
@@ -81,11 +90,36 @@ impl Hy2Client {
             .with_no_client_auth();
         client_crypto.alpn_protocols = vec![b"h3".to_vec(), b"h3-29".to_vec()];
 
-        let client_config = quinn::ClientConfig::new(Arc::new(
+        let mut client_config = quinn::ClientConfig::new(Arc::new(
             QuicClientConfig::try_from(client_crypto).map_err(map_other)?,
         ));
 
-        let mut endpoint = quinn::Endpoint::client("[::]:0".parse().unwrap()).map_err(map_other)?;
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
+        transport_config.datagram_send_buffer_size(1024 * 1024);
+        client_config.transport_config(Arc::new(transport_config));
+
+        let bind: SocketAddr = cfg
+            .bind
+            .as_deref()
+            .unwrap_or("[::]:0")
+            .parse()
+            .map_err(map_other)?;
+
+        let salamander_key = cfg
+            .salamander
+            .as_ref()
+            .map(|s| Arc::new(s.as_bytes().to_vec()));
+
+        let quinn_sock = transport::make_quinn_socket(bind, salamander_key).map_err(map_other)?;
+        let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
+        let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+            quinn::EndpointConfig::default(),
+            None,
+            quinn_sock,
+            runtime,
+        )
+        .map_err(map_other)?;
         endpoint.set_default_client_config(client_config);
 
         let conn = endpoint
@@ -94,13 +128,16 @@ impl Hy2Client {
             .await
             .map_err(map_other)?;
 
-        let (h3_driver, h3_send) = hy2_auth(cfg, &conn).await?;
+        let (h3_driver, h3_send, udp_supported) = hy2_auth(cfg, &conn).await?;
+        let udp =
+            (cfg.udp && udp_supported).then(|| Arc::new(Hy2Udp::new(conn.clone(), net.clone())));
 
         Ok(Self {
             _endpoint: endpoint,
             conn,
             _h3_driver: h3_driver,
             _h3_send: h3_send,
+            udp,
         })
     }
 }
@@ -111,6 +148,7 @@ async fn hy2_auth(
 ) -> Result<(
     tokio::task::JoinHandle<()>,
     SendRequest<h3_quinn::OpenStreams, Bytes>,
+    bool,
 )> {
     let quinn_conn = h3_quinn::Connection::new(conn.clone());
     let (mut h3_conn, mut send_request) = h3::client::new(quinn_conn).await.map_err(map_other)?;
@@ -144,7 +182,14 @@ async fn hy2_auth(
         ));
     }
 
-    Ok((driver, send_request))
+    let udp_supported = resp
+        .headers()
+        .get("hysteria-udp")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    Ok((driver, send_request, udp_supported))
 }
 
 fn resolve_server_name(cfg: &HysteriaNetConfig) -> Result<String> {
@@ -210,8 +255,29 @@ impl rd_interface::TcpConnect for HysteriaNet {
     }
 }
 
+#[async_trait]
+impl rd_interface::UdpBind for HysteriaNet {
+    async fn udp_bind(
+        &self,
+        ctx: &mut rd_interface::Context,
+        _addr: &Address,
+    ) -> Result<UdpSocket> {
+        let _ = ctx;
+        if !self.cfg.udp {
+            return Err(Error::NotEnabled);
+        }
+        let client = self.get_client().await?;
+        let udp = client.udp.as_ref().ok_or(Error::NotEnabled)?;
+        Ok(udp.bind_socket())
+    }
+}
+
 impl INet for HysteriaNet {
     fn provide_tcp_connect(&self) -> Option<&dyn rd_interface::TcpConnect> {
+        Some(self)
+    }
+
+    fn provide_udp_bind(&self) -> Option<&dyn rd_interface::UdpBind> {
         Some(self)
     }
 }
@@ -232,6 +298,8 @@ mod tests {
             auth: "test-password".to_string(),
             server_name: Some("localhost".to_string()),
             ca_pem: None,
+            bind: None,
+            salamander: None,
             udp: false,
             padding: false,
             net: NetRef::new_with_value("test".into(), net),
@@ -243,6 +311,7 @@ mod tests {
             &hy2,
             ProviderCapability {
                 tcp_connect: true,
+                udp_bind: true,
                 ..Default::default()
             },
         );
