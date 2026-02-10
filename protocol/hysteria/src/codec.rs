@@ -1,0 +1,43 @@
+use rd_interface::Address;
+
+pub(crate) const HY2_TCP_REQUEST: u64 = 0x401;
+
+pub(crate) fn write_varint(out: &mut Vec<u8>, mut x: u64) {
+    // QUIC variable-length integer encoding
+    // 00: 1 byte, 01: 2 bytes, 10: 4 bytes, 11: 8 bytes
+    if x < (1 << 6) {
+        out.push(x as u8);
+    } else if x < (1 << 14) {
+        x |= 0b01 << 14;
+        out.extend_from_slice(&(x as u16).to_be_bytes());
+    } else if x < (1 << 30) {
+        x |= 0b10 << 30;
+        out.extend_from_slice(&(x as u32).to_be_bytes());
+    } else {
+        // Up to 2^62-1
+        x |= 0b11 << 62;
+        out.extend_from_slice(&(x as u64).to_be_bytes());
+    }
+}
+
+pub(crate) fn write_tcp_request(out: &mut Vec<u8>, target: &Address) {
+    write_varint(out, HY2_TCP_REQUEST);
+    match target {
+        Address::SocketAddr(sa) => match sa.ip() {
+            std::net::IpAddr::V4(v4) => {
+                write_varint(out, 0);
+                out.extend_from_slice(&v4.octets());
+            }
+            std::net::IpAddr::V6(v6) => {
+                write_varint(out, 2);
+                out.extend_from_slice(&v6.octets());
+            }
+        },
+        Address::Domain(domain, _port) => {
+            write_varint(out, 1);
+            write_varint(out, domain.len() as u64);
+            out.extend_from_slice(domain.as_bytes());
+        }
+    }
+    write_varint(out, target.port() as u64);
+}
