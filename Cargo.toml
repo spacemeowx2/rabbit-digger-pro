@@ -65,6 +65,7 @@ trojan = { path = "./protocol/trojan", optional = true }
 rpc = { path = "./protocol/rpc", optional = true }
 raw = { path = "./protocol/raw", optional = true }
 obfs = { path = "./protocol/obfs", optional = true }
+hysteria = { path = "./protocol/hysteria", optional = true }
 
 console-subscriber = { version = "0.5.0", optional = true }
 
@@ -97,6 +98,7 @@ default = [
     "trojan",
     "rpc",
     "obfs",
+    "hysteria",
     "api_server",
     "rhai",
     "raw",
@@ -133,6 +135,7 @@ members = [
     "protocol/rpc",
     "protocol/raw",
     "protocol/obfs",
+    "protocol/hysteria",
     "ffi",
 ]
 

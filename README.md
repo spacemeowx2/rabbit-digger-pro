@@ -26,6 +26,7 @@ All-in-one proxy written in Rust.
 
 * Shadowsocks
 * Trojan
+* Hysteria v2 (HY2)
 * HTTP
 * Socks5
 * obfs(http_simple)
