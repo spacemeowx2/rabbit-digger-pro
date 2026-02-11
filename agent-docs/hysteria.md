@@ -35,44 +35,43 @@
 
 ### 传输层（QUIC + 可选 Salamander）
 - HY2 基于 QUIC。
-- 可选 “Salamander” 对 UDP 包做混淆：每个 UDP 包前加 16 字节 `salt`，计算 `BLAKE2b-256(salt || key)` 得到 32 字节 key stream，对 payload 做 XOR；发送为 `salt || xor(payload)`，接收反向处理。
+- 可选 “Salamander” 对 QUIC UDP 包做混淆：每个 UDP 包前加 8 字节 `salt`，计算 `BLAKE2b-256(key || salt)` 得到 32 字节 key stream，对 payload 做 XOR；发送为 `salt || xor(payload)`，接收反向处理。
 
 ### 认证（HTTP/3 `/auth`）
-- QUIC 建连后，client 必须发送 HTTP 请求到 `/auth`。
-- 规范要求 `Host`（authority）为 `hysteria`（本项目 client 发送 `https://hysteria/auth`，满足该要求）。
-- 必须带 `Authorization` header（值由服务端配置决定）。实测上游实现存在两种形式：
-  - `Authorization: <password>`
-  - `Authorization: Bearer <password>`（本项目 server 兼容两者）
-- 成功响应的 HTTP status 为 `233`。
+- QUIC 建连后，client 必须发送 HTTP/3 `POST /auth`，并要求 `:host` 为 `hysteria`（本项目 client 发送 `https://hysteria/auth`）。
+- 认证 header（规范）：`Hysteria-Auth: <string>`。
+- 兼容（非规范但常见）：`Authorization: <password>` / `Authorization: Bearer <password>`（本项目 server 兼容三种）。
+- 成功响应 HTTP status 为 `233`，并返回：
+  - `Hysteria-UDP: true/false`
+  - `Hysteria-CC-RX: <uint|auto>`（本项目 server 默认返回 `auto`）
+  - `Hysteria-Padding: <string>`（随机 padding string，双方应忽略）
 - 可选请求 header：
-  - `Hysteria-CC-RX`: 下行 bps（不实现复杂 CC，先按文档要求透传/默认）
-  - `Hysteria-Padding`: `true/false`
-  - `Hysteria-UDP`: `true/false`（是否启用 UDP）
+  - `Hysteria-CC-RX: <uint>`（bytes/s；0 表示未知）
+  - `Hysteria-Padding: <string>`（随机 padding string，双方应忽略）
 - 响应 header（用于能力判断）：
   - `Hysteria-UDP`: `true/false`
-  - `Hysteria-CC-RX`: server 接受的下行 bps
+  - `Hysteria-CC-RX`: server 接受的下行 bytes/s（或 `auto`）
 
 ### TCP（双向 QUIC stream）
 - 每次 TCP 连接：打开一个双向 QUIC stream，写入 `TCPRequest`：
-  - `varint(0x401)` message type
-  - `varint(AddressType)`：IPv4=0, Domain=1, IPv6=2
-  - address：
-    - IPv4: 4 bytes
-    - IPv6: 16 bytes
-    - Domain: `varint(len)` + `domain bytes`
-  - `varint(port)`
-- 后续该 stream 就是 TCP payload 双向转发。
+  - `varint(0x401)` (TCPRequest ID)
+  - `varint(Address length)` + `Address string (host:port)`
+  - `varint(Padding length)` + `Random padding`
+- server 必须先回 `TCPResponse`：
+  - `uint8(Status)`：`0x00=OK`，`0x01=Error`
+  - `varint(Message length)` + `Message string`
+  - `varint(Padding length)` + `Random padding`
+- 只有在 response OK 后，双方才开始转发 TCP payload。
 
 ### UDP（QUIC datagram）
-- client->server: `0x3` + `UDPMessage`（含 address）
-- server->client: `0x2` + `UDPMessage`（不含 address）
-- `UDPMessage` 字段：
-  - `session ID` uint32
-  - `packet ID` uint16（每 session 递增）
-  - `frag ID` uint8
-  - `frag count` uint8
-  - `address length` varint + `address bytes`（仅 client->server；address 为 `host:port` 字符串）
-  - `payload bytes`
+- UDP 包通过 QUIC unreliable datagram 发送，格式 `UDPMessage`（双向一致）：
+  - `uint32 Session ID`
+  - `uint16 Packet ID`
+  - `uint8 Fragment ID`
+  - `uint8 Fragment Count`
+  - `varint Address length` + `Address string (host:port)`
+  - `Payload bytes`
+- 分片要求：超过 `max_datagram_size` 必须分片或丢弃；丢任一分片则整包丢弃。
 
 ---
 
@@ -86,6 +85,9 @@
 - 2026-02-11：新增 `protocol/hysteria` server（QUIC + H3 `/auth` + TCP/UDP 转发，编译通过）
 - 2026-02-11：新增联调单测：`protocol/hysteria/src/interop_tests.rs`（TCP + UDP）
 - 2026-02-11：兼容 `Authorization: Bearer <password>`；并将 rustls provider 选择收敛到统一入口（避免运行时 panic）
+- 2026-02-11：对齐官方 Protocol Spec：`Hysteria-Auth`/`TCPResponse`/`UDPMessage` 统一格式、Salamander(8-byte salt)
+- 2026-02-11：增强健壮性与测试：H3 drain、UDP session idle 回收、分片重组 TTL、codec/salamander/auth/interop 扩展测试
+- 2026-02-11：与上游 `hysteria` v2.7.0 互通验证通过：官方 client → 本项目 server；本项目 client → 官方 server（TCP/HTTP 经 SOCKS5 验证）
 
 ---
 
@@ -115,14 +117,14 @@ server:
 
 ## 覆盖范围与已知差异（实现完整性说明）
 
-当前实现目标是“能在本项目内自洽运行 + 联调通过”的最小可用子集，已覆盖：
-- QUIC 传输 + HTTP/3 `/auth`（client/server）
-- TCP：`0x401` 建连消息 + 双向转发（client/server）
-- UDP：datagram `0x3/0x2` + 分片重组（client/server）
-- Salamander：作为底层 UDP socket 的可选混淆层（client/server）
-- 真实端口联调单测：`protocol/hysteria/src/interop_tests.rs`
+当前实现已按官方 Protocol Spec（Hysteria v2 / “v4” 协议）对齐并自测通过，覆盖：
+- QUIC 传输 + HTTP/3 `/auth`：`Hysteria-Auth`/`Hysteria-CC-RX`/`Hysteria-Padding`（client/server）
+- TCP：`TCPRequest(0x401)` + `TCPResponse` + 双向转发（client/server）
+- UDP：`UDPMessage`（双向同格式）+ 分片重组（client/server）
+- Salamander：8-byte salt + `BLAKE2b-256(key || salt)`（client/server）
+- 单测：真实端口联调（TCP echo + UDP echo）`protocol/hysteria/src/interop_tests.rs`
 
-仍未覆盖/可能与规范或上游实现存在差异的点（后续互通性风险来源）：
-- `/auth` 校验：server 目前**不强制** `:authority == hysteria`（规范要求但先放宽兼容），仅校验 path 与 `Authorization`。
-- `/auth` header 语义：`Hysteria-CC-RX`、`Hysteria-Padding` 等仅按“能通过握手/不破坏互通”处理，未实现完整的拥塞控制/带宽协商逻辑。
-- 连接与生命周期：server 侧 H3 driver 目前是最小保活模型（能跑通测试），对更复杂的并发/长连接场景可能还需打磨。
+仍未覆盖/可能影响“对抗探测/更强伪装/更复杂边界”的点：
+- HTTP/3 masquerade：当前只返回 404（未实现静态站点或反代上游站点）。
+- 拥塞控制/带宽协商：`Hysteria-CC-RX` 目前按协议交互（client 发 uint；server 回 `auto`），未实现额外的应用层限速策略。
+- 生命周期细节：auth 后 server 侧已保持 H3 连接持续驱动并对后续请求返回 404；更复杂的“伪装站点/反代”仍未实现。

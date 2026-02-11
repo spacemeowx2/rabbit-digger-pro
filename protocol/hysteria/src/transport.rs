@@ -91,7 +91,7 @@ impl AsyncUdpSocket for Hy2UdpSocket {
                 Ok((n, addr)) => {
                     let mut len = n;
                     if let Some(key) = &self.salamander_key {
-                        if n < 16 {
+                        if n < 8 {
                             continue;
                         }
                         let buf0 = bufs[0].as_mut();

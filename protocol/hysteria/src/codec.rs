@@ -1,4 +1,5 @@
-use rd_interface::Address;
+use rd_interface::{error::map_other, Address, Error, Result};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub(crate) const HY2_TCP_REQUEST: u64 = 0x401;
 
@@ -67,24 +68,106 @@ pub(crate) fn decode_varint(input: &[u8]) -> Option<(u64, usize)> {
     }
 }
 
-pub(crate) fn write_tcp_request(out: &mut Vec<u8>, target: &Address) {
+pub(crate) fn write_tcp_request_with_padding(out: &mut Vec<u8>, target: &Address, padding: &[u8]) {
     write_varint(out, HY2_TCP_REQUEST);
+    let addr = address_to_host_port(target);
+    let addr_bytes = addr.as_bytes();
+    write_varint(out, addr_bytes.len() as u64);
+    out.extend_from_slice(addr_bytes);
+    write_varint(out, padding.len() as u64);
+    out.extend_from_slice(padding);
+}
+
+pub(crate) fn write_tcp_response_ok(out: &mut Vec<u8>, padding: &[u8]) {
+    write_tcp_response(out, 0x00, "", padding);
+}
+
+pub(crate) fn write_tcp_response_error(out: &mut Vec<u8>, msg: &str, padding: &[u8]) {
+    write_tcp_response(out, 0x01, msg, padding);
+}
+
+fn write_tcp_response(out: &mut Vec<u8>, status: u8, msg: &str, padding: &[u8]) {
+    out.push(status);
+    write_varint(out, msg.as_bytes().len() as u64);
+    out.extend_from_slice(msg.as_bytes());
+    write_varint(out, padding.len() as u64);
+    out.extend_from_slice(padding);
+}
+
+pub(crate) fn address_to_host_port(target: &Address) -> String {
     match target {
-        Address::SocketAddr(sa) => match sa.ip() {
-            std::net::IpAddr::V4(v4) => {
-                write_varint(out, 0);
-                out.extend_from_slice(&v4.octets());
-            }
-            std::net::IpAddr::V6(v6) => {
-                write_varint(out, 2);
-                out.extend_from_slice(&v6.octets());
-            }
-        },
-        Address::Domain(domain, _port) => {
-            write_varint(out, 1);
-            write_varint(out, domain.len() as u64);
-            out.extend_from_slice(domain.as_bytes());
+        Address::SocketAddr(sa) => sa.to_string(),
+        Address::Domain(domain, port) => format!("{domain}:{port}"),
+    }
+}
+
+pub(crate) async fn read_quic_varint<R: AsyncRead + Unpin>(r: &mut R) -> Result<u64> {
+    let mut first = [0u8; 1];
+    r.read_exact(&mut first).await.map_err(map_other)?;
+    let tag = first[0] >> 6;
+    let len = match tag {
+        0b00 => 1,
+        0b01 => 2,
+        0b10 => 4,
+        0b11 => 8,
+        _ => 1,
+    };
+    let mut buf = [0u8; 8];
+    buf[0] = first[0];
+    if len > 1 {
+        r.read_exact(&mut buf[1..len]).await.map_err(map_other)?;
+    }
+    let (v, _) =
+        decode_varint(&buf[..len]).ok_or_else(|| Error::Other("hysteria: bad varint".into()))?;
+    Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use rd_interface::IntoAddress;
+
+    use super::*;
+
+    #[test]
+    fn test_varint_roundtrip_boundaries() {
+        let values = [
+            0u64,
+            1,
+            63,
+            64,
+            16383,
+            16384,
+            (1 << 30) - 1,
+            1 << 30,
+            (1 << 62) - 1,
+        ];
+        for v in values {
+            let mut buf = Vec::new();
+            write_varint(&mut buf, v);
+            let (got, used) = decode_varint(&buf).unwrap();
+            assert_eq!(got, v);
+            assert_eq!(used, buf.len());
         }
     }
-    write_varint(out, target.port() as u64);
+
+    #[test]
+    fn test_tcp_request_encoding() {
+        let target = "example.com:80".into_address().unwrap();
+        let padding = b"pad";
+        let mut out = Vec::new();
+        write_tcp_request_with_padding(&mut out, &target, padding);
+
+        let (id, n1) = decode_varint(&out).unwrap();
+        assert_eq!(id, HY2_TCP_REQUEST);
+        let (addr_len, n2) = decode_varint(&out[n1..]).unwrap();
+        let addr_len = addr_len as usize;
+        let start = n1 + n2;
+        let addr = std::str::from_utf8(&out[start..start + addr_len]).unwrap();
+        assert_eq!(addr, "example.com:80");
+        let (pad_len, n3) = decode_varint(&out[start + addr_len..]).unwrap();
+        assert_eq!(pad_len as usize, padding.len());
+        let pad_start = start + addr_len + n3;
+        assert_eq!(&out[pad_start..pad_start + padding.len()], padding);
+        assert_eq!(pad_start + padding.len(), out.len());
+    }
 }

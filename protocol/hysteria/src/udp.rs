@@ -6,6 +6,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -34,18 +35,31 @@ struct IncomingPacket {
     payload: Bytes,
 }
 
-#[derive(Default)]
 struct Hy2UdpState {
     next_session_id: u32,
     sessions: HashMap<Address, SessionEntry>,
     id_to_peer: HashMap<u32, SocketAddr>,
     reassembly: HashMap<(u32, u16), Reassembly>,
+    last_prune: Instant,
+}
+
+impl Default for Hy2UdpState {
+    fn default() -> Self {
+        Self {
+            next_session_id: 0,
+            sessions: HashMap::new(),
+            id_to_peer: HashMap::new(),
+            reassembly: HashMap::new(),
+            last_prune: Instant::now(),
+        }
+    }
 }
 
 struct Reassembly {
     frag_count: u8,
     frags: Vec<Option<Bytes>>,
     received: u8,
+    created_at: Instant,
 }
 
 enum SessionEntry {
@@ -70,6 +84,7 @@ impl Hy2Udp {
         let (incoming, _) = broadcast::channel(1024);
         let state = Arc::new(Mutex::new(Hy2UdpState {
             next_session_id: rand::random(),
+            last_prune: Instant::now(),
             ..Default::default()
         }));
 
@@ -113,23 +128,30 @@ async fn recv_loop(
             Ok(d) => d,
             Err(_) => return,
         };
-        if datagram.is_empty() {
+        if datagram.len() < 4 + 2 + 1 + 1 {
             continue;
         }
-        if datagram[0] != 0x2 {
+        let session_id = u32::from_be_bytes(datagram[0..4].try_into().unwrap());
+        let packet_id = u16::from_be_bytes(datagram[4..6].try_into().unwrap());
+        let frag_id = datagram[6];
+        let frag_count = datagram[7];
+        let mut rest = &datagram[8..];
+
+        let (addr_len, vi_len) = match crate::codec::decode_varint(rest) {
+            Some(v) => v,
+            None => continue,
+        };
+        rest = &rest[vi_len..];
+        let addr_len = addr_len as usize;
+        if rest.len() < addr_len {
             continue;
         }
-        if datagram.len() < 1 + 4 + 2 + 1 + 1 {
-            continue;
-        }
-        let session_id = u32::from_be_bytes(datagram[1..5].try_into().unwrap());
-        let packet_id = u16::from_be_bytes(datagram[5..7].try_into().unwrap());
-        let frag_id = datagram[7];
-        let frag_count = datagram[8];
-        let payload = Bytes::copy_from_slice(&datagram[9..]);
+        rest = &rest[addr_len..];
+        let payload = Bytes::copy_from_slice(rest);
 
         let (peer, maybe_complete) = {
             let mut st = state.lock();
+            prune_reassembly(&mut st);
             let peer = match st.id_to_peer.get(&session_id).copied() {
                 Some(p) => p,
                 None => continue,
@@ -139,13 +161,19 @@ async fn recv_loop(
                 (peer, Some(payload))
             } else {
                 let key = (session_id, packet_id);
+                let now = Instant::now();
                 let entry = st.reassembly.entry(key).or_insert_with(|| Reassembly {
                     frag_count,
                     frags: vec![None; frag_count as usize],
                     received: 0,
+                    created_at: now,
                 });
 
                 if entry.frag_count != frag_count {
+                    st.reassembly.remove(&key);
+                    continue;
+                }
+                if now.duration_since(entry.created_at) > REASSEMBLY_TTL {
                     st.reassembly.remove(&key);
                     continue;
                 }
@@ -176,6 +204,25 @@ async fn recv_loop(
             let _ = incoming.send(IncomingPacket { peer, payload });
         }
     }
+}
+
+const REASSEMBLY_TTL: Duration = Duration::from_secs(10);
+const REASSEMBLY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+const REASSEMBLY_MAX_ENTRIES: usize = 2048;
+
+fn prune_reassembly(st: &mut Hy2UdpState) {
+    let now = Instant::now();
+    if now.duration_since(st.last_prune) < REASSEMBLY_PRUNE_INTERVAL
+        && st.reassembly.len() < REASSEMBLY_MAX_ENTRIES
+    {
+        return;
+    }
+    st.reassembly
+        .retain(|_, e| now.duration_since(e.created_at) <= REASSEMBLY_TTL);
+    if st.reassembly.len() > REASSEMBLY_MAX_ENTRIES {
+        st.reassembly.clear();
+    }
+    st.last_prune = now;
 }
 
 struct Hy2UdpSocket {
@@ -245,7 +292,7 @@ impl IUdpSocket for Hy2UdpSocket {
 
         let addr_bytes = session.address_str.as_bytes();
         let addr_len_vi = varint_len(addr_bytes.len() as u64);
-        let header_len = 1 + 4 + 2 + 1 + 1 + addr_len_vi + addr_bytes.len();
+        let header_len = 4 + 2 + 1 + 1 + addr_len_vi + addr_bytes.len();
         if header_len >= max {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -282,7 +329,6 @@ impl IUdpSocket for Hy2UdpSocket {
             let payload = &buf[start..end];
 
             let mut out = Vec::with_capacity(header_len + payload.len());
-            out.push(0x3);
             out.extend_from_slice(&session_id.to_be_bytes());
             out.extend_from_slice(&packet_id.to_be_bytes());
             out.push(frag_id as u8);

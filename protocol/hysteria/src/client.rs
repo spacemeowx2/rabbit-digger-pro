@@ -5,6 +5,7 @@ use futures_util::future::poll_fn;
 use h3::client::SendRequest;
 use http::{Request, StatusCode};
 use quinn::crypto::rustls::QuicClientConfig;
+use rand::RngCore;
 use rd_interface::{
     async_trait, error::map_other, prelude::*, registry::NetRef, Address, Error, INet, IntoDyn,
     Net, Result, TcpStream, UdpSocket,
@@ -12,7 +13,12 @@ use rd_interface::{
 use tokio::sync::OnceCell;
 
 use crate::crypto_provider::ensure_rustls_provider_installed;
-use crate::{codec::write_tcp_request, stream::Hy2Stream, transport, udp::Hy2Udp};
+use crate::{
+    codec::{read_quic_varint, write_tcp_request_with_padding},
+    stream::Hy2Stream,
+    transport,
+    udp::Hy2Udp,
+};
 
 #[rd_config]
 #[derive(Debug, Clone)]
@@ -41,6 +47,10 @@ pub struct HysteriaNetConfig {
 
     #[serde(default)]
     pub(crate) padding: bool,
+
+    /// Client's maximum receive rate in bytes per second. 0 means unknown.
+    #[serde(default)]
+    pub(crate) cc_rx: u64,
 
     #[serde(default)]
     pub(crate) net: NetRef,
@@ -165,12 +175,11 @@ async fn hy2_auth(
         .method("POST")
         .uri("https://hysteria/auth");
 
-    builder = builder.header("authorization", cfg.auth.as_str());
-    builder = builder.header("hysteria-udp", if cfg.udp { "true" } else { "false" });
-    builder = builder.header(
-        "hysteria-padding",
-        if cfg.padding { "true" } else { "false" },
-    );
+    builder = builder.header("hysteria-auth", cfg.auth.as_str());
+    builder = builder.header("hysteria-cc-rx", cfg.cc_rx.to_string());
+    if cfg.padding {
+        builder = builder.header("hysteria-padding", random_padding_string());
+    }
 
     let req = builder.body(()).map_err(map_other)?;
 
@@ -250,9 +259,16 @@ impl rd_interface::TcpConnect for HysteriaNet {
         let (mut send, recv) = client.conn.open_bi().await.map_err(map_other)?;
 
         let mut req = Vec::with_capacity(64);
-        write_tcp_request(&mut req, addr);
+        let padding = if self.cfg.padding {
+            random_padding_bytes(32)
+        } else {
+            Vec::new()
+        };
+        write_tcp_request_with_padding(&mut req, addr, &padding);
         send.write_all(&req).await.map_err(map_other)?;
 
+        let mut recv = recv;
+        read_tcp_response(&mut recv).await?;
         Ok(Hy2Stream { send, recv }.into_dyn())
     }
 }
@@ -304,6 +320,7 @@ mod tests {
             salamander: None,
             udp: false,
             padding: false,
+            cc_rx: 0,
             net: NetRef::new_with_value("test".into(), net),
         })
         .unwrap()
@@ -318,4 +335,63 @@ mod tests {
             },
         );
     }
+}
+
+fn random_padding_bytes(len: usize) -> Vec<u8> {
+    let mut out = vec![0u8; len];
+    rand::thread_rng().fill_bytes(&mut out);
+    out
+}
+
+fn random_padding_string() -> String {
+    let mut out = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut out);
+    out.iter().map(|b| (b'a' + (b % 26)) as char).collect()
+}
+
+async fn read_tcp_response(recv: &mut quinn::RecvStream) -> Result<()> {
+    let mut status = [0u8; 1];
+    recv.read_exact(&mut status).await.map_err(map_other)?;
+    let msg_len = read_quic_varint(recv).await? as usize;
+    if msg_len > 0 {
+        let mut msg = vec![0u8; msg_len];
+        recv.read_exact(&mut msg).await.map_err(map_other)?;
+        let _ = String::from_utf8_lossy(&msg);
+        let padding_len = read_quic_varint(recv).await? as usize;
+        if padding_len > 0 {
+            let mut discard = vec![0u8; padding_len.min(64 * 1024)];
+            let mut left = padding_len;
+            while left > 0 {
+                let n = discard.len().min(left);
+                recv.read_exact(&mut discard[..n])
+                    .await
+                    .map_err(map_other)?;
+                left -= n;
+            }
+        }
+        if status[0] != 0x00 {
+            return Err(Error::Other(
+                format!("hysteria tcp error: {}", String::from_utf8_lossy(&msg)).into(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let padding_len = read_quic_varint(recv).await? as usize;
+    if padding_len > 0 {
+        let mut discard = vec![0u8; padding_len.min(64 * 1024)];
+        let mut left = padding_len;
+        while left > 0 {
+            let n = discard.len().min(left);
+            recv.read_exact(&mut discard[..n])
+                .await
+                .map_err(map_other)?;
+            left -= n;
+        }
+    }
+
+    if status[0] != 0x00 {
+        return Err(Error::Other("hysteria tcp error".into()));
+    }
+    Ok(())
 }

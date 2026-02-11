@@ -1,21 +1,35 @@
-use std::{collections::HashMap, fs, io, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs, io,
+    net::SocketAddr,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use h3::server::RequestStream;
-use http::{Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode};
 use parking_lot::Mutex;
 use quinn::crypto::rustls::QuicServerConfig;
 use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rand::RngCore;
 use rd_interface::{
     async_trait, error::map_other, prelude::*, Address, Context, Error, IServer, IntoAddress,
     IntoDyn, Net, Result, TcpStream,
 };
 use rd_std::ContextExt;
-use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 use crate::crypto_provider::ensure_rustls_provider_installed;
-use crate::{codec::decode_varint, stream::Hy2Stream, transport};
+use crate::{
+    codec::{
+        decode_varint, read_quic_varint, varint_len, write_tcp_response_error,
+        write_tcp_response_ok, write_varint,
+    },
+    stream::Hy2Stream,
+    transport,
+};
 
 #[rd_config]
 #[derive(Debug, Clone)]
@@ -132,6 +146,10 @@ async fn handle_connection(
         .map_err(map_other)?;
     hy2_auth_server(&mut h3_conn, &cfg).await?;
 
+    // Keep driving the HTTP/3 connection after auth. Some implementations may
+    // send additional requests, and not polling h3 control streams can stall.
+    let h3_drain = tokio::spawn(async move { hy2_h3_drain(h3_conn).await });
+
     let udp_handle = if cfg.udp {
         Some(tokio::spawn(hy2_udp_loop(connection.clone(), net.clone())))
     } else {
@@ -157,9 +175,23 @@ async fn handle_connection(
         h.abort();
     }
 
-    // Keep h3_conn alive. Dropping it would close the underlying QUIC connection.
-    let _ = h3_conn;
+    h3_drain.abort();
     Ok(())
+}
+
+async fn hy2_h3_drain(mut h3_conn: h3::server::Connection<h3_quinn::Connection, Bytes>) {
+    loop {
+        let resolver = match h3_conn.accept().await {
+            Ok(Some(r)) => r,
+            Ok(None) => return,
+            Err(_) => return,
+        };
+        let (_req, stream) = match resolver.resolve_request().await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let _ = respond_not_found(stream).await;
+    }
 }
 
 async fn hy2_auth_server(
@@ -175,16 +207,43 @@ async fn hy2_auth_server(
                     respond_auth_ok(stream, cfg.udp).await?;
                     return Ok(());
                 }
-                respond_forbidden(stream).await?;
+                respond_not_found(stream).await?;
             }
         }
     }
 }
 
 fn is_auth_request(req: &Request<()>, cfg: &HysteriaServerConfig) -> bool {
+    if req.method() != Method::POST {
+        return false;
+    }
     if req.uri().path() != "/auth" {
         return false;
     }
+
+    let host_ok = req
+        .uri()
+        .authority()
+        .map(|a| a.as_str().eq_ignore_ascii_case("hysteria"))
+        .or_else(|| {
+            req.headers()
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .map(|h| h.eq_ignore_ascii_case("hysteria"))
+        })
+        .unwrap_or(false);
+    if !host_ok {
+        return false;
+    }
+
+    if let Some(auth) = req
+        .headers()
+        .get("hysteria-auth")
+        .and_then(|v| v.to_str().ok())
+    {
+        return auth == cfg.auth;
+    }
+
     let Some(auth) = req
         .headers()
         .get("authorization")
@@ -200,9 +259,12 @@ async fn respond_auth_ok(
     mut stream: RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     udp: bool,
 ) -> Result<()> {
+    let padding = random_padding_string();
     let response = Response::builder()
         .status(StatusCode::from_u16(233).unwrap())
         .header("hysteria-udp", if udp { "true" } else { "false" })
+        .header("hysteria-cc-rx", "auto")
+        .header("hysteria-padding", padding)
         .body(())
         .map_err(map_other)?;
     stream.send_response(response).await.map_err(map_other)?;
@@ -210,11 +272,11 @@ async fn respond_auth_ok(
     Ok(())
 }
 
-async fn respond_forbidden(
+async fn respond_not_found(
     mut stream: RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 ) -> Result<()> {
     let response = Response::builder()
-        .status(StatusCode::FORBIDDEN)
+        .status(StatusCode::NOT_FOUND)
         .body(())
         .map_err(map_other)?;
     stream.send_response(response).await.map_err(map_other)?;
@@ -222,8 +284,14 @@ async fn respond_forbidden(
     Ok(())
 }
 
+fn random_padding_string() -> String {
+    let mut out = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut out);
+    out.iter().map(|b| (b'a' + (b % 26)) as char).collect()
+}
+
 async fn hy2_handle_tcp_stream(
-    send: quinn::SendStream,
+    mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     remote: SocketAddr,
     net: Net,
@@ -233,56 +301,47 @@ async fn hy2_handle_tcp_stream(
         return Err(Error::Other("hysteria: unknown stream type".into()));
     }
 
-    let addr_type = read_quic_varint(&mut recv).await?;
-    let target = match addr_type {
-        0 => {
-            let mut ip = [0u8; 4];
-            recv.read_exact(&mut ip).await.map_err(map_other)?;
-            let port = read_quic_varint(&mut recv).await? as u16;
-            Address::SocketAddr(SocketAddr::from((ip, port)))
+    let addr_len = read_quic_varint(&mut recv).await? as usize;
+    if addr_len == 0 || addr_len > 1024 {
+        return Err(Error::Other("hysteria: invalid tcp address length".into()));
+    }
+    let mut addr_buf = vec![0u8; addr_len];
+    recv.read_exact(&mut addr_buf).await.map_err(map_other)?;
+    let addr_str = String::from_utf8(addr_buf).map_err(map_other)?;
+
+    let padding_len = read_quic_varint(&mut recv).await? as usize;
+    if padding_len > 0 {
+        let mut discard = vec![0u8; padding_len.min(64 * 1024)];
+        let mut left = padding_len;
+        while left > 0 {
+            let n = discard.len().min(left);
+            recv.read_exact(&mut discard[..n])
+                .await
+                .map_err(map_other)?;
+            left -= n;
         }
-        2 => {
-            let mut ip = [0u8; 16];
-            recv.read_exact(&mut ip).await.map_err(map_other)?;
-            let port = read_quic_varint(&mut recv).await? as u16;
-            Address::SocketAddr(SocketAddr::from((ip, port)))
-        }
-        1 => {
-            let len = read_quic_varint(&mut recv).await? as usize;
-            let mut buf = vec![0u8; len];
-            recv.read_exact(&mut buf).await.map_err(map_other)?;
-            let domain = String::from_utf8(buf).map_err(map_other)?;
-            let port = read_quic_varint(&mut recv).await? as u16;
-            Address::Domain(domain, port)
-        }
-        _ => return Err(Error::Other("hysteria: invalid addr type".into())),
-    };
+    }
+
+    let target: Address = addr_str.as_str().into_address()?;
 
     let mut ctx = Context::from_socketaddr(remote);
-    let outbound = net.tcp_connect(&mut ctx, &target).await?;
+    let outbound = match net.tcp_connect(&mut ctx, &target).await {
+        Ok(s) => s,
+        Err(e) => {
+            let mut resp = Vec::with_capacity(128);
+            write_tcp_response_error(&mut resp, &e.to_string(), &[]);
+            let _ = send.write_all(&resp).await;
+            let _ = send.finish();
+            return Err(e);
+        }
+    };
+
+    let mut resp = Vec::with_capacity(32);
+    write_tcp_response_ok(&mut resp, &[]);
+    send.write_all(&resp).await.map_err(map_other)?;
     let inbound: TcpStream = Hy2Stream { send, recv }.into_dyn();
     ctx.connect_tcp(inbound, outbound).await?;
     Ok(())
-}
-
-async fn read_quic_varint<R: tokio::io::AsyncRead + Unpin>(r: &mut R) -> Result<u64> {
-    let mut first = [0u8; 1];
-    r.read_exact(&mut first).await.map_err(map_other)?;
-    let tag = first[0] >> 6;
-    let len = match tag {
-        0b00 => 1,
-        0b01 => 2,
-        0b10 => 4,
-        0b11 => 8,
-        _ => 1,
-    };
-    let mut buf = [0u8; 8];
-    buf[0] = first[0];
-    if len > 1 {
-        r.read_exact(&mut buf[1..len]).await.map_err(map_other)?;
-    }
-    let (v, _) = decode_varint(&buf[..len]).ok_or_else(|| Error::Other("bad varint".into()))?;
-    Ok(v)
 }
 
 async fn hy2_udp_loop(conn: quinn::Connection, net: Net) {
@@ -292,17 +351,14 @@ async fn hy2_udp_loop(conn: quinn::Connection, net: Net) {
             Ok(d) => d,
             Err(_) => return,
         };
-        if datagram.is_empty() || datagram[0] != 0x3 {
+        if datagram.len() < 4 + 2 + 1 + 1 {
             continue;
         }
-        if datagram.len() < 1 + 4 + 2 + 1 + 1 {
-            continue;
-        }
-        let session_id = u32::from_be_bytes(datagram[1..5].try_into().unwrap());
-        let packet_id = u16::from_be_bytes(datagram[5..7].try_into().unwrap());
-        let frag_id = datagram[7];
-        let frag_count = datagram[8];
-        let mut rest = &datagram[9..];
+        let session_id = u32::from_be_bytes(datagram[0..4].try_into().unwrap());
+        let packet_id = u16::from_be_bytes(datagram[4..6].try_into().unwrap());
+        let frag_id = datagram[6];
+        let frag_count = datagram[7];
+        let mut rest = &datagram[8..];
 
         let (addr_len, vi_len) = match decode_varint(rest) {
             Some(v) => v,
@@ -322,19 +378,33 @@ async fn hy2_udp_loop(conn: quinn::Connection, net: Net) {
 
         let maybe_complete = {
             let mut st = state.lock();
-            st.id_to_addr
-                .entry(session_id)
-                .or_insert_with(|| addr_str.clone());
+            prune_reassembly(&mut st);
+            let prev = st.id_to_addr.get(&session_id).cloned();
+            match prev {
+                Some(old) if old != addr_str => {
+                    st.sessions.remove(&session_id);
+                    st.id_to_addr.insert(session_id, addr_str.clone());
+                }
+                Some(_) => {}
+                None => {
+                    st.id_to_addr.insert(session_id, addr_str.clone());
+                }
+            }
             if frag_count <= 1 {
                 Some(payload)
             } else {
+                let now = Instant::now();
                 let key = (session_id, packet_id);
                 let entry = st.reassembly.entry(key).or_insert_with(|| Reassembly {
                     frag_count,
                     frags: vec![None; frag_count as usize],
                     received: 0,
+                    created_at: now,
                 });
-                if entry.frag_count != frag_count || frag_id >= frag_count {
+                if now.duration_since(entry.created_at) > REASSEMBLY_TTL {
+                    st.reassembly.remove(&key);
+                    None
+                } else if entry.frag_count != frag_count || frag_id >= frag_count {
                     st.reassembly.remove(&key);
                     None
                 } else {
@@ -372,17 +442,48 @@ async fn hy2_udp_loop(conn: quinn::Connection, net: Net) {
     }
 }
 
-#[derive(Default)]
+const REASSEMBLY_TTL: Duration = Duration::from_secs(10);
+const REASSEMBLY_PRUNE_INTERVAL: Duration = Duration::from_secs(1);
+const REASSEMBLY_MAX_ENTRIES: usize = 2048;
+
+fn prune_reassembly(st: &mut UdpState) {
+    let now = Instant::now();
+    if now.duration_since(st.last_prune) < REASSEMBLY_PRUNE_INTERVAL
+        && st.reassembly.len() < REASSEMBLY_MAX_ENTRIES
+    {
+        return;
+    }
+    st.reassembly
+        .retain(|_, e| now.duration_since(e.created_at) <= REASSEMBLY_TTL);
+    if st.reassembly.len() > REASSEMBLY_MAX_ENTRIES {
+        st.reassembly.clear();
+    }
+    st.last_prune = now;
+}
+
 struct UdpState {
     sessions: HashMap<u32, Arc<UdpSession>>,
     id_to_addr: HashMap<u32, String>,
     reassembly: HashMap<(u32, u16), Reassembly>,
+    last_prune: Instant,
+}
+
+impl Default for UdpState {
+    fn default() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            id_to_addr: HashMap::new(),
+            reassembly: HashMap::new(),
+            last_prune: Instant::now(),
+        }
+    }
 }
 
 struct Reassembly {
     frag_count: u8,
     frags: Vec<Option<Bytes>>,
     received: u8,
+    created_at: Instant,
 }
 
 struct UdpSession {
@@ -424,9 +525,11 @@ async fn udp_send_to_target(
                     st.sessions.insert(session_id, created.clone());
                     tokio::spawn(udp_session_loop(
                         conn.clone(),
+                        state.clone(),
                         session_id,
                         socket,
                         target,
+                        addr_str,
                         rx,
                     ));
                     created
@@ -445,18 +548,24 @@ async fn udp_send_to_target(
 
 async fn udp_session_loop(
     conn: quinn::Connection,
+    state: Arc<Mutex<UdpState>>,
     session_id: u32,
     mut socket: rd_interface::UdpSocket,
     target: Address,
+    address_str: String,
     mut rx: mpsc::Receiver<Bytes>,
 ) {
     let max = conn.max_datagram_size().unwrap_or(1200);
-    let header_len = 1 + 4 + 2 + 1 + 1;
+    let addr_bytes = address_str.as_bytes();
+    let addr_len_vi = varint_len(addr_bytes.len() as u64);
+    let header_len = 4 + 2 + 1 + 1 + addr_len_vi + addr_bytes.len();
     let per_frag = max.saturating_sub(header_len).max(1);
     let mut next_packet_id: u16 = 0;
 
     let mut buf = vec![0u8; 64 * 1024];
     loop {
+        let idle = tokio::time::sleep(UDP_SESSION_IDLE_TIMEOUT);
+        tokio::pin!(idle);
         tokio::select! {
             biased;
             Some(data) = rx.recv() => {
@@ -485,20 +594,28 @@ async fn udp_session_loop(
                     let payload = &data[start..end];
 
                     let mut out = Vec::with_capacity(header_len + payload.len());
-                    out.push(0x2);
                     out.extend_from_slice(&session_id.to_be_bytes());
                     out.extend_from_slice(&packet_id.to_be_bytes());
                     out.push(frag_id as u8);
                     out.push(frag_count as u8);
+                    write_varint(&mut out, addr_bytes.len() as u64);
+                    out.extend_from_slice(addr_bytes);
                     out.extend_from_slice(payload);
                     if conn.send_datagram(Bytes::from(out)).is_err() {
                         return;
                     }
                 }
             }
+            _ = &mut idle => break,
         }
     }
+
+    let mut st = state.lock();
+    st.sessions.remove(&session_id);
+    st.id_to_addr.remove(&session_id);
 }
+
+const UDP_SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn load_cert_and_key(
     cert_path: &str,
@@ -514,4 +631,59 @@ fn load_cert_and_key(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no private keys found"))
         .map_err(map_other)?;
     Ok((certs, key))
+}
+
+#[cfg(test)]
+mod tests {
+    use rd_interface::IntoAddress;
+
+    use super::*;
+
+    fn test_cfg() -> HysteriaServerConfig {
+        HysteriaServerConfig {
+            bind: "127.0.0.1:0".into_address().unwrap(),
+            tls_cert: "".to_string(),
+            tls_key: "".to_string(),
+            auth: "pw".to_string(),
+            udp: false,
+            salamander: None,
+            net: rd_interface::config::NetRef::new("out".into()),
+        }
+    }
+
+    #[test]
+    fn test_auth_hysteria_auth_header() {
+        let cfg = test_cfg();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("https://hysteria/auth")
+            .header("hysteria-auth", "pw")
+            .body(())
+            .unwrap();
+        assert!(is_auth_request(&req, &cfg));
+    }
+
+    #[test]
+    fn test_auth_authorization_bearer_compat() {
+        let cfg = test_cfg();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("https://hysteria/auth")
+            .header("authorization", "Bearer pw")
+            .body(())
+            .unwrap();
+        assert!(is_auth_request(&req, &cfg));
+    }
+
+    #[test]
+    fn test_auth_requires_hysteria_host() {
+        let cfg = test_cfg();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("https://example.com/auth")
+            .header("hysteria-auth", "pw")
+            .body(())
+            .unwrap();
+        assert!(!is_auth_request(&req, &cfg));
+    }
 }
