@@ -14,10 +14,7 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -33,7 +30,7 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Generate schema for docs
         run: |
-          cargo run -- generate-schema /tmp/rabbit-digger-pro-schema.json
+          cargo run --release -- generate-schema /tmp/rabbit-digger-pro-schema.json
           mkdir -p docs/static/schema
           cp /tmp/rabbit-digger-pro-schema.json docs/static/schema/rabbit-digger-pro-schema.json
       - name: Build website
