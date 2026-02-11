@@ -32,7 +32,7 @@ jobs:
         run: |
           # Generate the rabbit-digger-pro schema for docs reference.
           mkdir -p docs/static/schema
-          cargo run --release --manifest-path Cargo.toml -- generate-schema docs/static/schema/rabbit-digger-pro-schema.json
+          cargo run --release -- generate-schema docs/static/schema/rabbit-digger-pro-schema.json
       - name: Build website
         run: |
           cd docs
