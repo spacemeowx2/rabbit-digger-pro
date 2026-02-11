@@ -35,3 +35,6 @@ pub fn init(registry: &mut Registry) -> Result<()> {
     registry.add_server::<server::HysteriaServer>();
     Ok(())
 }
+
+#[cfg(test)]
+mod interop_tests;

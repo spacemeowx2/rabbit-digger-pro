@@ -54,56 +54,66 @@ impl HysteriaServer {
 #[async_trait]
 impl IServer for HysteriaServer {
     async fn start(&self) -> Result<()> {
-        let bind = match &self.cfg.bind {
-            Address::SocketAddr(sa) => *sa,
-            Address::Domain(_, _) => {
-                return Err(Error::Other(
-                    "hysteria server: bind must be a socket addr".into(),
-                ))
-            }
-        };
-
-        let (certs, key) = load_cert_and_key(&self.cfg.tls_cert, &self.cfg.tls_key)?;
-        let mut server_crypto = quinn::rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(map_other)?;
-        server_crypto.alpn_protocols = vec![b"h3".to_vec(), b"h3-29".to_vec()];
-
-        let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
-            QuicServerConfig::try_from(server_crypto).map_err(map_other)?,
-        ));
-        let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-        transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
-        transport_config.datagram_send_buffer_size(1024 * 1024);
-
-        let salamander_key = self
-            .cfg
-            .salamander
-            .as_ref()
-            .map(|s| Arc::new(s.as_bytes().to_vec()));
-        let sock = transport::make_quinn_socket(bind, salamander_key).map_err(map_other)?;
-        let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
-        let endpoint = quinn::Endpoint::new_with_abstract_socket(
-            quinn::EndpointConfig::default(),
-            Some(server_config),
-            sock,
-            runtime,
-        )
-        .map_err(map_other)?;
-
-        while let Some(conn) = endpoint.accept().await {
-            let net = self.net.clone();
-            let cfg = self.cfg.clone();
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(conn, cfg, net).await {
-                    tracing::error!("hysteria server connection error: {:?}", e);
-                }
-            });
-        }
-
-        Ok(())
+        let endpoint = create_endpoint(&self.cfg)?;
+        serve_endpoint(endpoint, self.cfg.clone(), self.net.clone()).await
     }
+}
+
+pub(crate) fn create_endpoint(cfg: &HysteriaServerConfig) -> Result<quinn::Endpoint> {
+    let bind = match &cfg.bind {
+        Address::SocketAddr(sa) => *sa,
+        Address::Domain(_, _) => {
+            return Err(Error::Other(
+                "hysteria server: bind must be a socket addr".into(),
+            ))
+        }
+    };
+
+    let (certs, key) = load_cert_and_key(&cfg.tls_cert, &cfg.tls_key)?;
+    let mut server_crypto = quinn::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(map_other)?;
+    server_crypto.alpn_protocols = vec![b"h3".to_vec(), b"h3-29".to_vec()];
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
+        QuicServerConfig::try_from(server_crypto).map_err(map_other)?,
+    ));
+    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
+    transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
+    transport_config.datagram_send_buffer_size(1024 * 1024);
+
+    let salamander_key = cfg
+        .salamander
+        .as_ref()
+        .map(|s| Arc::new(s.as_bytes().to_vec()));
+    let sock = transport::make_quinn_socket(bind, salamander_key).map_err(map_other)?;
+    let runtime: Arc<dyn quinn::Runtime> = Arc::new(quinn::TokioRuntime);
+    let endpoint = quinn::Endpoint::new_with_abstract_socket(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        sock,
+        runtime,
+    )
+    .map_err(map_other)?;
+    Ok(endpoint)
+}
+
+pub(crate) async fn serve_endpoint(
+    endpoint: quinn::Endpoint,
+    cfg: HysteriaServerConfig,
+    net: Net,
+) -> Result<()> {
+    while let Some(conn) = endpoint.accept().await {
+        let net = net.clone();
+        let cfg = cfg.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(conn, cfg, net).await {
+                tracing::error!("hysteria server connection error: {:?}", e);
+            }
+        });
+    }
+    Ok(())
 }
 
 async fn handle_connection(
