@@ -4,6 +4,7 @@ use server::{HysteriaServer, HysteriaServerConfig};
 
 mod client;
 mod codec;
+mod crypto_provider;
 mod salamander;
 mod server;
 mod stream;

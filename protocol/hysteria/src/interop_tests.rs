@@ -14,13 +14,6 @@ use crate::{
     server::{create_endpoint, serve_endpoint, HysteriaServerConfig},
 };
 
-fn install_rustls_provider() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let _ = quinn::rustls::crypto::ring::default_provider().install_default();
-    });
-}
-
 fn write_test_cert(dir: &TempDir) -> (String, String, String) {
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -45,7 +38,6 @@ fn local_net() -> Net {
 
 #[tokio::test]
 async fn test_hy2_server_client_tcp() {
-    install_rustls_provider();
     let dir = TempDir::new().unwrap();
     let (cert_path, key_path, ca_path) = write_test_cert(&dir);
 
@@ -123,7 +115,6 @@ async fn test_hy2_server_client_tcp() {
 
 #[tokio::test]
 async fn test_hy2_server_client_udp() {
-    install_rustls_provider();
     let dir = TempDir::new().unwrap();
     let (cert_path, key_path, ca_path) = write_test_cert(&dir);
 

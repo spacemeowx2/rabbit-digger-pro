@@ -39,8 +39,10 @@
 
 ### 认证（HTTP/3 `/auth`）
 - QUIC 建连后，client 必须发送 HTTP 请求到 `/auth`。
-- `Host`（authority）必须为 `hysteria`。
-- 必须带 `Authorization` header（值由服务端配置决定）。
+- 规范要求 `Host`（authority）为 `hysteria`（本项目 client 发送 `https://hysteria/auth`，满足该要求）。
+- 必须带 `Authorization` header（值由服务端配置决定）。实测上游实现存在两种形式：
+  - `Authorization: <password>`
+  - `Authorization: Bearer <password>`（本项目 server 兼容两者）
 - 成功响应的 HTTP status 为 `233`。
 - 可选请求 header：
   - `Hysteria-CC-RX`: 下行 bps（不实现复杂 CC，先按文档要求透传/默认）
@@ -83,6 +85,7 @@
 - 2026-02-10：本地联调验证：`rabbit-digger-pro` 通过 HY2(TCP) 成功代理访问本机 `python -m http.server`（socks5 -> rdp -> hysteria server -> localhost 目标）
 - 2026-02-11：新增 `protocol/hysteria` server（QUIC + H3 `/auth` + TCP/UDP 转发，编译通过）
 - 2026-02-11：新增联调单测：`protocol/hysteria/src/interop_tests.rs`（TCP + UDP）
+- 2026-02-11：兼容 `Authorization: Bearer <password>`；并将 rustls provider 选择收敛到统一入口（避免运行时 panic）
 
 ---
 
@@ -107,3 +110,19 @@ server:
     bind: 127.0.0.1:1080
     net: hy2_local
 ```
+
+---
+
+## 覆盖范围与已知差异（实现完整性说明）
+
+当前实现目标是“能在本项目内自洽运行 + 联调通过”的最小可用子集，已覆盖：
+- QUIC 传输 + HTTP/3 `/auth`（client/server）
+- TCP：`0x401` 建连消息 + 双向转发（client/server）
+- UDP：datagram `0x3/0x2` + 分片重组（client/server）
+- Salamander：作为底层 UDP socket 的可选混淆层（client/server）
+- 真实端口联调单测：`protocol/hysteria/src/interop_tests.rs`
+
+仍未覆盖/可能与规范或上游实现存在差异的点（后续互通性风险来源）：
+- `/auth` 校验：server 目前**不强制** `:authority == hysteria`（规范要求但先放宽兼容），仅校验 path 与 `Authorization`。
+- `/auth` header 语义：`Hysteria-CC-RX`、`Hysteria-Padding` 等仅按“能通过握手/不破坏互通”处理，未实现完整的拥塞控制/带宽协商逻辑。
+- 连接与生命周期：server 侧 H3 driver 目前是最小保活模型（能跑通测试），对更复杂的并发/长连接场景可能还需打磨。

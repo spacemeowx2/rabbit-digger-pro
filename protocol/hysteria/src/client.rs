@@ -11,6 +11,7 @@ use rd_interface::{
 };
 use tokio::sync::OnceCell;
 
+use crate::crypto_provider::ensure_rustls_provider_installed;
 use crate::{codec::write_tcp_request, stream::Hy2Stream, transport, udp::Hy2Udp};
 
 #[rd_config]
@@ -81,6 +82,7 @@ impl HysteriaNet {
 
 impl Hy2Client {
     async fn connect(cfg: &HysteriaNetConfig, net: &Net) -> Result<Self> {
+        ensure_rustls_provider_installed();
         let server_addr = resolve_server_addr(net, &cfg.server).await?;
         let server_name = resolve_server_name(cfg)?;
 

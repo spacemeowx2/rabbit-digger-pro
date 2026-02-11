@@ -14,6 +14,7 @@ use rd_std::ContextExt;
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
+use crate::crypto_provider::ensure_rustls_provider_installed;
 use crate::{codec::decode_varint, stream::Hy2Stream, transport};
 
 #[rd_config]
@@ -60,6 +61,7 @@ impl IServer for HysteriaServer {
 }
 
 pub(crate) fn create_endpoint(cfg: &HysteriaServerConfig) -> Result<quinn::Endpoint> {
+    ensure_rustls_provider_installed();
     let bind = match &cfg.bind {
         Address::SocketAddr(sa) => *sa,
         Address::Domain(_, _) => {
@@ -183,18 +185,15 @@ fn is_auth_request(req: &Request<()>, cfg: &HysteriaServerConfig) -> bool {
     if req.uri().path() != "/auth" {
         return false;
     }
-    if req.uri().authority().map(|a| a.as_str()) != Some("hysteria") {
-        return false;
-    }
-    if let Some(auth) = req
+    let Some(auth) = req
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-    {
-        auth == cfg.auth
-    } else {
-        false
-    }
+    else {
+        return false;
+    };
+
+    auth == cfg.auth || auth.strip_prefix("Bearer ").is_some_and(|v| v == cfg.auth)
 }
 
 async fn respond_auth_ok(
