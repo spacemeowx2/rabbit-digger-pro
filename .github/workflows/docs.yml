@@ -30,9 +30,8 @@ jobs:
           pnpm install --frozen-lockfile
       - name: Generate schema for docs
         run: |
-          cargo run --release -- generate-schema /tmp/rabbit-digger-pro-schema.json
           mkdir -p docs/static/schema
-          cp /tmp/rabbit-digger-pro-schema.json docs/static/schema/rabbit-digger-pro-schema.json
+          cargo run --release -- generate-schema docs/static/schema/rabbit-digger-pro-schema.json
       - name: Build website
         run: |
           cd docs
