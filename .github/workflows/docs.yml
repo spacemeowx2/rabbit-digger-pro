@@ -31,6 +31,7 @@ jobs:
       - name: Generate schema for docs
         run: |
           # Generate the rabbit-digger-pro schema for docs reference.
+          cd "$GITHUB_WORKSPACE"
           mkdir -p docs/static/schema
           cargo run --release -- generate-schema docs/static/schema/rabbit-digger-pro-schema.json
       - name: Build website
