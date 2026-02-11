@@ -3,6 +3,7 @@
 目标：
 - 按照官方文档在本机启动一个 Hysteria v2 服务端（用于联调）
 - 在本项目实现 HY2 对应的 client protocol（Rust）
+- 在本项目实现 HY2 对应的 server protocol（Rust）
 - 全程用 Markdown 跟踪进度与决策（本文件）
 
 参考文档（上游）：
@@ -18,6 +19,8 @@
 - [x] 3. 实现 HY2 client：QUIC + `/auth` + TCP CONNECT(stream)
 - [x] 4. 实现 HY2 client：UDP(datagram) + Salamander(可选)
 - [x] 5. 接入到 registry/feature，补最小测试与使用说明
+- [ ] 6. 实现 HY2 server：QUIC + HTTP/3 `/auth` + TCP/UDP 转发（进行中）
+- [ ] 7. 单测：server+client 联调（进行中）
 
 ---
 
@@ -78,6 +81,7 @@
 - 2026-02-10：新增 `protocol/hysteria`：完成 HY2 `/auth` + TCP stream request 的最小实现（编译/单测通过）
 - 2026-02-10：`protocol/hysteria` 增加 UDP(datagram) 与 Salamander(传输层混淆) 支持（编译/单测通过）
 - 2026-02-10：本地联调验证：`rabbit-digger-pro` 通过 HY2(TCP) 成功代理访问本机 `python -m http.server`（socks5 -> rdp -> hysteria server -> localhost 目标）
+- 2026-02-11：新增 `protocol/hysteria` server（QUIC + H3 `/auth` + TCP/UDP 转发，编译通过）
 
 ---
 

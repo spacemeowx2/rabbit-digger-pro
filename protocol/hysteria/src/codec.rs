@@ -32,6 +32,41 @@ pub(crate) fn write_varint(out: &mut Vec<u8>, mut x: u64) {
     }
 }
 
+pub(crate) fn decode_varint(input: &[u8]) -> Option<(u64, usize)> {
+    let first = *input.first()?;
+    let tag = first >> 6;
+    match tag {
+        0b00 => Some(((first & 0b0011_1111) as u64, 1)),
+        0b01 => {
+            if input.len() < 2 {
+                return None;
+            }
+            let b0 = input[0] & 0b0011_1111;
+            let v = u16::from_be_bytes([b0, input[1]]) as u64;
+            Some((v, 2))
+        }
+        0b10 => {
+            if input.len() < 4 {
+                return None;
+            }
+            let b0 = input[0] & 0b0011_1111;
+            let v = u32::from_be_bytes([b0, input[1], input[2], input[3]]) as u64;
+            Some((v, 4))
+        }
+        0b11 => {
+            if input.len() < 8 {
+                return None;
+            }
+            let b0 = input[0] & 0b0011_1111;
+            let v = u64::from_be_bytes([
+                b0, input[1], input[2], input[3], input[4], input[5], input[6], input[7],
+            ]);
+            Some((v, 8))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn write_tcp_request(out: &mut Vec<u8>, target: &Address) {
     write_varint(out, HY2_TCP_REQUEST);
     match target {

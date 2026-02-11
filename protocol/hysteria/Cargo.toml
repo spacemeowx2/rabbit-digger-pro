@@ -7,6 +7,7 @@ edition = "2021"
 rd-interface = { path = "../../rd-interface", version = "0.4" }
 tokio = { version = "1.49.0", features = ["full"] }
 serde = "1.0"
+rd-std = { path = "../../rd-std", version = "0.1" }
 
 quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 h3 = "0.0.8"
@@ -20,6 +21,8 @@ blake2 = "0.10"
 rand = "0.8"
 parking_lot = "0.12"
 tokio-stream = { version = "0.1.18", features = ["sync"] }
+tracing = "0.1.44"
 
 [dev-dependencies]
-rd-std = { path = "../../rd-std", version = "0.1" }
+rcgen = "0.13"
+tempfile = "3.24.0"
