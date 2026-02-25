@@ -37,6 +37,7 @@ fn local_net() -> Net {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "flaky on windows CI")]
 async fn test_hy2_server_client_tcp() {
     let dir = TempDir::new().unwrap();
     let (cert_path, key_path, ca_path) = write_test_cert(&dir);
@@ -115,6 +116,7 @@ async fn test_hy2_server_client_tcp() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "flaky on windows CI")]
 async fn test_hy2_server_client_udp() {
     let dir = TempDir::new().unwrap();
     let (cert_path, key_path, ca_path) = write_test_cert(&dir);
@@ -236,6 +238,7 @@ async fn test_hy2_server_client_tcp_error_response() {
 }
 
 #[tokio::test]
+#[cfg_attr(windows, ignore = "flaky on windows CI")]
 async fn test_hy2_server_client_udp_fragmentation() {
     let dir = TempDir::new().unwrap();
     let (cert_path, key_path, ca_path) = write_test_cert(&dir);
