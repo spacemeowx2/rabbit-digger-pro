@@ -350,11 +350,17 @@ mod tests {
     fn test_default_bind_addr_for_server_family() {
         let v4_bind =
             default_bind_addr_for_server(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 4433));
-        assert!(v4_bind.is_ipv4());
+        assert_eq!(
+            v4_bind,
+            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0)
+        );
 
         let v6_bind =
             default_bind_addr_for_server(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4433));
-        assert!(v6_bind.is_ipv6());
+        assert_eq!(
+            v6_bind,
+            SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0)
+        );
     }
 }
 
