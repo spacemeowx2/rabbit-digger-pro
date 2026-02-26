@@ -1,4 +1,4 @@
-use std::{future::Future, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use rd_interface::{config::NetRef, Context, IntoAddress, IntoDyn, Net};
 use rd_std::builtin::local::{LocalNet, LocalNetConfig};
@@ -34,29 +34,6 @@ fn write_test_cert(dir: &TempDir) -> (String, String, String) {
 
 fn local_net() -> Net {
     LocalNet::new(LocalNetConfig::default()).into_dyn()
-}
-
-fn is_locally_closed(err: &rd_interface::Error) -> bool {
-    format!("{err:?}").contains("LocallyClosed")
-}
-
-async fn with_locally_closed_retry<T, F, Fut>(mut f: F) -> rd_interface::Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = rd_interface::Result<T>>,
-{
-    let mut last_err = None;
-    for _ in 0..10 {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) if is_locally_closed(&e) => {
-                last_err = Some(e);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(last_err.expect("at least one retry attempt"))
 }
 
 #[tokio::test]
@@ -121,12 +98,8 @@ async fn test_hy2_server_client_tcp() {
     .into_dyn();
 
     let echo_target = echo_addr.to_string().into_address().unwrap();
-    let mut tcp = with_locally_closed_retry(|| async {
-        let mut ctx = Context::new();
-        client_net.tcp_connect(&mut ctx, &echo_target).await
-    })
-    .await
-    .unwrap();
+    let mut ctx = Context::new();
+    let mut tcp = client_net.tcp_connect(&mut ctx, &echo_target).await.unwrap();
 
     tcp.write_all(b"hello").await.unwrap();
     let mut buf = [0u8; 5];
@@ -189,14 +162,11 @@ async fn test_hy2_server_client_udp() {
     .unwrap()
     .into_dyn();
 
-    let mut udp = with_locally_closed_retry(|| async {
-        let mut ctx = Context::new();
-        client_net
-            .udp_bind(&mut ctx, &"0.0.0.0:0".into_address().unwrap())
-            .await
-    })
-    .await
-    .unwrap();
+    let mut ctx = Context::new();
+    let mut udp = client_net
+        .udp_bind(&mut ctx, &"0.0.0.0:0".into_address().unwrap())
+        .await
+        .unwrap();
 
     udp.send_to(b"ping", &echo_addr.into()).await.unwrap();
     let mut buf = vec![0u8; 64];
@@ -313,14 +283,11 @@ async fn test_hy2_server_client_udp_fragmentation() {
     .unwrap()
     .into_dyn();
 
-    let mut udp = with_locally_closed_retry(|| async {
-        let mut ctx = Context::new();
-        client_net
-            .udp_bind(&mut ctx, &"0.0.0.0:0".into_address().unwrap())
-            .await
-    })
-    .await
-    .unwrap();
+    let mut ctx = Context::new();
+    let mut udp = client_net
+        .udp_bind(&mut ctx, &"0.0.0.0:0".into_address().unwrap())
+        .await
+        .unwrap();
 
     let payload = vec![0x42u8; 6_000];
     let mut ok = false;

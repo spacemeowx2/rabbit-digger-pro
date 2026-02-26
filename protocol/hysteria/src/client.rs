@@ -114,9 +114,10 @@ impl Hy2Client {
         let bind: SocketAddr = cfg
             .bind
             .as_deref()
-            .unwrap_or("[::]:0")
-            .parse()
-            .map_err(map_other)?;
+            .map(str::parse)
+            .transpose()
+            .map_err(map_other)?
+            .unwrap_or_else(|| default_bind_addr_for_server(server_addr));
 
         let salamander_key = cfg
             .salamander
@@ -227,6 +228,13 @@ async fn resolve_server_addr(net: &Net, server: &Address) -> Result<SocketAddr> 
     }
 }
 
+fn default_bind_addr_for_server(server_addr: SocketAddr) -> SocketAddr {
+    match server_addr {
+        SocketAddr::V4(_) => "0.0.0.0:0".parse().expect("valid v4 bind addr"),
+        SocketAddr::V6(_) => "[::]:0".parse().expect("valid v6 bind addr"),
+    }
+}
+
 fn load_roots(ca_pem: Option<&str>) -> Result<quinn::rustls::RootCertStore> {
     let mut roots = quinn::rustls::RootCertStore::empty();
 
@@ -302,6 +310,8 @@ impl INet for HysteriaNet {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
     use rd_interface::IntoAddress;
     use rd_std::tests::{assert_net_provider, ProviderCapability, TestNet};
 
@@ -334,6 +344,17 @@ mod tests {
                 ..Default::default()
             },
         );
+    }
+
+    #[test]
+    fn test_default_bind_addr_for_server_family() {
+        let v4_bind =
+            default_bind_addr_for_server(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 4433));
+        assert!(v4_bind.is_ipv4());
+
+        let v6_bind =
+            default_bind_addr_for_server(SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4433));
+        assert!(v6_bind.is_ipv6());
     }
 }
 
