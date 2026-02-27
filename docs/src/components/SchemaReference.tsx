@@ -168,7 +168,7 @@ export default function SchemaReference({
     fetch(schemaUrl)
       .then((res) => {
         if (!res.ok) {
-          throw new Error(`加载失败 (${res.status})`);
+          throw new Error(`加载失败: ${schemaUrl} (${res.status})`);
         }
         return res.json();
       })
