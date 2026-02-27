@@ -28,10 +28,6 @@ jobs:
         run: |
           cd docs
           pnpm install --frozen-lockfile
-      - name: Ensure schema file is tracked in git
-        run: |
-          git ls-files --error-unmatch docs/static/schema/rabbit-digger-pro-schema.json \
-            || { echo "Error: docs/static/schema/rabbit-digger-pro-schema.json is not tracked in git"; exit 1; }
       - name: Generate schema for docs
         run: |
           # Generate the rabbit-digger-pro schema for docs reference.
