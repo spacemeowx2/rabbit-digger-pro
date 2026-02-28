@@ -15,8 +15,10 @@ mod tests;
 #[rd_config]
 #[derive(Debug)]
 pub struct Socks5NetConfig {
+    /// SOCKS5 代理服务器地址。
     server: Address,
 
+    /// 通过指定 net 进行下游连接。
     #[serde(default)]
     net: NetRef,
 }
@@ -24,10 +26,13 @@ pub struct Socks5NetConfig {
 #[rd_config]
 #[derive(Debug)]
 pub struct Socks5ServerConfig {
+    /// SOCKS5 代理监听地址。
     bind: Address,
 
+    /// 处理请求的上游 net。
     #[serde(default)]
     net: NetRef,
+    /// 监听连接所使用的 net。
     #[serde(default)]
     listen: NetRef,
 }

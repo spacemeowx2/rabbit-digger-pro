@@ -12,6 +12,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
       - uses: pnpm/action-setup@v4
         with:
           version: 9
@@ -25,6 +28,12 @@ jobs:
         run: |
           cd docs
           pnpm install --frozen-lockfile
+      - name: Generate schema for docs
+        run: |
+          # Generate the rabbit-digger-pro schema for docs reference.
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p docs/static/schema
+          cargo run --package rabbit-digger-pro -- generate-schema docs/static/schema/rabbit-digger-pro-schema.json
       - name: Build website
         run: |
           cd docs
