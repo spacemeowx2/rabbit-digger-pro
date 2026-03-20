@@ -6,12 +6,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use super::event::{Event, EventType};
+use super::event::{ConnectFailureObservation, Event, EventType, FailureKind, ObservationEvent};
 use atomic_shim::AtomicU64;
 use dashmap::DashMap;
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
-use rd_interface::{Address, Value};
+use rd_interface::{Address, Context as RdContext, Value};
 use serde::{Serialize, Serializer};
 use tokio::{
     sync::{broadcast, mpsc, oneshot},
@@ -151,6 +151,7 @@ impl ConnectionState {
 struct ManagerInner {
     state: ConnectionState,
     heartbeat_interval: broadcast::Sender<()>,
+    observations: broadcast::Sender<ObservationEvent>,
     sender: mpsc::UnboundedSender<Event>,
     heartbeat_handle: JoinHandle<()>,
 }
@@ -166,6 +167,7 @@ impl ManagerInner {
     fn new2() -> (Arc<Self>, mpsc::UnboundedReceiver<Event>) {
         let (sender, rx) = mpsc::unbounded_channel();
         let (heartbeat_interval, _) = broadcast::channel(1);
+        let (observations, _) = broadcast::channel(256);
         let tx = heartbeat_interval.clone();
 
         let heartbeat_handle = tokio::spawn(async move {
@@ -180,6 +182,7 @@ impl ManagerInner {
             Arc::new(Self {
                 state: ConnectionState::new(),
                 heartbeat_interval,
+                observations,
                 sender,
                 heartbeat_handle,
             }),
@@ -213,6 +216,9 @@ impl ConnectionManager {
     }
     pub fn stop(&self) {
         self.inner.heartbeat_handle.abort()
+    }
+    pub fn subscribe_observations(&self) -> broadcast::Receiver<ObservationEvent> {
+        self.inner.observations.subscribe()
     }
     pub fn borrow_state<F, R>(&self, f: F) -> R
     where
@@ -252,6 +258,37 @@ impl ConnectionManager {
             self.inner.heartbeat_interval.subscribe(),
             self.inner.sender.clone(),
         )
+    }
+    pub fn record_tcp_connect_failure(
+        &self,
+        addr: Address,
+        ctx: &RdContext,
+        error: &rd_interface::Error,
+    ) {
+        if error.is_aborted() {
+            return;
+        }
+
+        let failure_kind = match error {
+            rd_interface::Error::Timeout(_) => FailureKind::Timeout,
+            rd_interface::Error::IO(inner) if inner.kind() == io::ErrorKind::TimedOut => {
+                FailureKind::Timeout
+            }
+            _ => FailureKind::ConnectError,
+        };
+
+        let _ = self
+            .inner
+            .observations
+            .send(ObservationEvent::TcpConnectFailure(
+                ConnectFailureObservation {
+                    observed_at: ts(&SystemTime::now()),
+                    addr,
+                    ctx: ctx.to_value(),
+                    failure_kind,
+                    error: error.to_string(),
+                },
+            ));
     }
 }
 
@@ -523,5 +560,39 @@ mod tests {
         yield_now().await;
 
         assert_eq!(conn_mgr.inner.state.connections.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_record_tcp_connect_failure_emits_observation() {
+        let conn_mgr = ConnectionManager::new();
+        let mut rx = conn_mgr.subscribe_observations();
+        let addr = "localhost:443".into_address().unwrap();
+        let mut ctx = rd_interface::Context::new();
+        ctx.insert("key".to_string(), "value").unwrap();
+
+        conn_mgr.record_tcp_connect_failure(
+            addr.clone(),
+            &ctx,
+            &rd_interface::Error::from(io::Error::new(io::ErrorKind::TimedOut, "timeout")),
+        );
+
+        let item = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match item {
+            ObservationEvent::TcpConnectFailure(failure) => {
+                assert_eq!(failure.addr, addr);
+                assert_eq!(failure.failure_kind, FailureKind::Timeout);
+                assert_eq!(
+                    failure
+                        .ctx
+                        .get("key")
+                        .and_then(|value| value.as_str())
+                        .unwrap(),
+                    "value"
+                );
+            }
+        }
     }
 }

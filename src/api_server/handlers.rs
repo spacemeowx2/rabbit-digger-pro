@@ -27,7 +27,8 @@ use tokio::{pin, time::interval};
 use tokio_stream::wrappers::IntervalStream;
 
 use crate::{
-    config::{ConfigManager, ImportSource, SelectMap},
+    config::{apply_selected_net, ConfigManager, ImportSource},
+    policy::PolicyRuntime,
     storage::{FileStorage, Storage},
 };
 
@@ -35,6 +36,7 @@ use crate::{
 pub(super) struct Ctx {
     pub(super) rd: RabbitDigger,
     pub(super) cfg_mgr: ConfigManager,
+    pub(super) policy: PolicyRuntime,
     pub(super) userdata: Arc<FileStorage>,
 }
 
@@ -58,15 +60,19 @@ impl From<anyhow::Error> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        let status = match &self {
+            ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::Anyhow(_) | ApiError::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
         let body = Json(json!({
-            "error": match self {
+            "error": match &self {
                 ApiError::Anyhow(e) => e.to_string(),
                 ApiError::NotFound => "Not found".to_string(),
                 ApiError::Other(e) => e.to_string(),
             },
         }));
 
-        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+        (status, body).into_response()
     }
 }
 
@@ -127,6 +133,46 @@ pub(super) async fn get_state(
     Ok(Json(&rd.state_str().await?).into_response())
 }
 
+pub(super) async fn get_policy_state(
+    Extension(Ctx { policy, .. }): Extension<Ctx>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(policy.state().await?).into_response())
+}
+
+pub(super) async fn get_policy_actions(
+    Extension(Ctx { policy, .. }): Extension<Ctx>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(policy.actions().await?).into_response())
+}
+
+pub(super) async fn get_policy_suggestions(
+    Extension(Ctx { policy, .. }): Extension<Ctx>,
+) -> Result<impl IntoResponse, ApiError> {
+    Ok(Json(policy.suggestions().await?).into_response())
+}
+
+pub(super) async fn approve_policy_suggestion(
+    Extension(Ctx { policy, .. }): Extension<Ctx>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let suggestion = policy
+        .approve_suggestion(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(suggestion))
+}
+
+pub(super) async fn reject_policy_suggestion(
+    Extension(Ctx { policy, .. }): Extension<Ctx>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let suggestion = policy
+        .reject_suggestion(&id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(suggestion))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PostSelect {
     selected: String,
@@ -136,26 +182,7 @@ pub(super) async fn post_select(
     Path(net_name): Path<String>,
     Json(PostSelect { selected }): Json<PostSelect>,
 ) -> Result<impl IntoResponse, ApiError> {
-    rd.update_net(&net_name, |o| {
-        if o.net_type == "select" {
-            if let Some(o) = o.opt.as_object_mut() {
-                o.insert("selected".to_string(), selected.clone().into());
-            }
-        } else {
-            tracing::warn!("net_type is not select");
-        }
-    })
-    .await?;
-
-    if let Some(id) = rd.get_id().await {
-        let mut select_map = SelectMap::from_cache(&id, cfg_mgr.select_storage()).await?;
-
-        select_map.insert(net_name.to_string(), selected);
-
-        select_map
-            .write_cache(&id, cfg_mgr.select_storage())
-            .await?;
-    }
+    apply_selected_net(&rd, cfg_mgr.select_storage(), &net_name, &selected).await?;
 
     Ok(Json(Value::Null))
 }

@@ -8,6 +8,7 @@ use yaml_merge_keys::merge_keys_serde;
 pub mod api_server;
 pub mod config;
 pub mod log;
+pub mod policy;
 pub mod schema;
 mod select;
 pub mod storage;
@@ -43,6 +44,7 @@ pub fn deserialize_config(s: &str) -> Result<config::ConfigExt> {
 pub struct App {
     pub rd: RabbitDigger,
     pub cfg_mgr: ConfigManager,
+    pub policy: policy::PolicyRuntime,
 }
 
 #[derive(Default, Debug)]
@@ -56,8 +58,21 @@ impl App {
     pub async fn new() -> Result<Self> {
         let rd = RabbitDigger::new(get_registry()?).await?;
         let cfg_mgr = ConfigManager::new().await?;
+        #[cfg(not(test))]
+        let policy = policy::PolicyRuntime::new(rd.clone(), cfg_mgr.clone()).await?;
+        #[cfg(test)]
+        let policy = policy::PolicyRuntime::new_for_test(
+            rd.clone(),
+            cfg_mgr.clone(),
+            std::sync::Arc::new(crate::storage::MemoryCache::new().await?),
+        )
+        .await?;
 
-        Ok(Self { rd, cfg_mgr })
+        Ok(Self {
+            rd,
+            cfg_mgr,
+            policy,
+        })
     }
     pub async fn run_api_server(&self, api_server: ApiServer) -> Result<()> {
         #[cfg(feature = "api_server")]
@@ -65,6 +80,7 @@ impl App {
             api_server::ApiServer {
                 rabbit_digger: self.rd.clone(),
                 config_manager: self.cfg_mgr.clone(),
+                policy_runtime: self.policy.clone(),
                 access_token: api_server.access_token,
                 web_ui: api_server.web_ui,
             }

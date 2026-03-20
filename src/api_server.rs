@@ -4,7 +4,7 @@ use anyhow::Result;
 use rabbit_digger::RabbitDigger;
 use tokio::net::TcpListener;
 
-use crate::config::ConfigManager;
+use crate::{config::ConfigManager, policy::PolicyRuntime};
 
 mod handlers;
 mod routes;
@@ -12,6 +12,7 @@ mod routes;
 pub struct ApiServer {
     pub rabbit_digger: RabbitDigger,
     pub config_manager: ConfigManager,
+    pub policy_runtime: PolicyRuntime,
     pub access_token: Option<String>,
     pub web_ui: Option<String>,
 }
@@ -53,6 +54,7 @@ mod tests {
         let server = ApiServer {
             rabbit_digger: app.rd.clone(),
             config_manager: app.cfg_mgr.clone(),
+            policy_runtime: app.policy.clone(),
             access_token: None,
             web_ui: None,
         };
@@ -98,6 +100,47 @@ mod tests {
                 .get("content-type")
                 .and_then(|v| v.to_str().ok()),
             Some("application/json")
+        );
+
+        let r = client
+            .get(format!("{base}/api/policy/state"))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v.get("version").and_then(|value| value.as_u64()), Some(1));
+
+        app.policy
+            .add_pending_suggestion_for_test("x.com", "proxy", "node-a", "node-b")
+            .await
+            .unwrap();
+        let r = client
+            .get(format!("{base}/api/policy/suggestions"))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+        let suggestions: Vec<Value> = r.json().await.unwrap();
+        assert_eq!(suggestions.len(), 1);
+        let suggestion_id = suggestions[0]
+            .get("id")
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+
+        let r = client
+            .post(format!(
+                "{base}/api/policy/suggestions/{suggestion_id}/approve"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(
+            v.get("status").and_then(|value| value.as_str()),
+            Some("approved")
         );
 
         let key = format!("test-{}", uuid::Uuid::new_v4());
@@ -159,6 +202,7 @@ mod tests {
         let server = ApiServer {
             rabbit_digger: app.rd.clone(),
             config_manager: app.cfg_mgr.clone(),
+            policy_runtime: app.policy.clone(),
             access_token: None,
             web_ui: Some(tmp.path().to_string_lossy().to_string()),
         };
@@ -187,6 +231,7 @@ mod tests {
         let server = ApiServer {
             rabbit_digger: app.rd.clone(),
             config_manager: app.cfg_mgr.clone(),
+            policy_runtime: app.policy.clone(),
             access_token: Some("secret".to_string()),
             web_ui: None,
         };
@@ -231,6 +276,7 @@ mod tests {
         let server = ApiServer {
             rabbit_digger: app.rd.clone(),
             config_manager: app.cfg_mgr.clone(),
+            policy_runtime: app.policy.clone(),
             access_token: None,
             web_ui: None,
         };
@@ -285,7 +331,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(r.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
         let v: Value = r.json().await.unwrap();
         assert_eq!(v.get("error").and_then(|s| s.as_str()), Some("Not found"));
 

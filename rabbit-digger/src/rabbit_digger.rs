@@ -27,6 +27,7 @@ use tokio::{
 use uuid::Uuid;
 
 use self::connection_manager::{ConnectionManager, ConnectionState};
+pub use self::event::{ConnectFailureObservation, FailureKind, ObservationEvent};
 
 mod connection_manager;
 mod event;
@@ -167,6 +168,10 @@ impl RabbitDigger {
         F: FnOnce(&ConnectionState) -> R,
     {
         self.inner.conn_mgr.borrow_state(f)
+    }
+
+    pub fn subscribe_observations(&self) -> tokio::sync::broadcast::Receiver<ObservationEvent> {
+        self.inner.conn_mgr.subscribe_observations()
     }
 
     // get state

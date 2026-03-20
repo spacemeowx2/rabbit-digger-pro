@@ -153,7 +153,14 @@ impl rd_interface::TcpConnect for RunningServerNet {
             Address::SocketAddr(addr) => ctx.insert_common(DestSocketAddr(*addr))?,
         };
 
-        let tcp = self.net.tcp_connect(ctx, &addr).await?;
+        let tcp = match self.net.tcp_connect(ctx, &addr).await {
+            Ok(tcp) => tcp,
+            Err(error) => {
+                self.manager
+                    .record_tcp_connect_failure(addr.clone(), ctx, &error);
+                return Err(error);
+            }
+        };
 
         tracing::info!(target: "rabbit_digger", ?ctx, "Connected");
         let tcp = WrapTcpStream::new(tcp, &self.manager, addr.clone(), ctx);

@@ -2,6 +2,7 @@ use core::mem::discriminant;
 use std::time::SystemTime;
 
 use rd_interface::{Address, Value};
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -43,4 +44,26 @@ impl Event {
             time: SystemTime::now(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureKind {
+    ConnectError,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectFailureObservation {
+    pub observed_at: u64,
+    pub addr: Address,
+    pub ctx: Value,
+    pub failure_kind: FailureKind,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ObservationEvent {
+    TcpConnectFailure(ConnectFailureObservation),
 }

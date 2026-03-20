@@ -1,4 +1,7 @@
-pub use self::{importer::get_importer_registry, manager::ConfigManager, select_map::SelectMap};
+pub use self::{
+    importer::get_importer_registry, manager::ConfigManager, select_map::apply_selected_net,
+    select_map::SelectMap,
+};
 use anyhow::{anyhow, Context, Result};
 use futures::{Future, StreamExt};
 use notify_stream::{notify::RecursiveMode, notify_stream};

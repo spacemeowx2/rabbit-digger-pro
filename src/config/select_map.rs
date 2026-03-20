@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use rabbit_digger::Config;
+use rabbit_digger::{Config, RabbitDigger};
 use serde::{Deserialize, Serialize};
 
 use crate::storage::Storage;
@@ -45,6 +45,33 @@ impl SelectMap {
     pub fn insert(&mut self, key: String, value: String) -> Option<String> {
         self.0.insert(key, value)
     }
+}
+
+pub async fn apply_selected_net(
+    rd: &RabbitDigger,
+    storage: &dyn Storage,
+    net_name: &str,
+    selected: &str,
+) -> Result<()> {
+    let selected = selected.to_string();
+    rd.update_net(net_name, |o| {
+        if o.net_type == "select" {
+            if let Some(o) = o.opt.as_object_mut() {
+                o.insert("selected".to_string(), selected.clone().into());
+            }
+        } else {
+            tracing::warn!("net_type is not select");
+        }
+    })
+    .await?;
+
+    if let Some(id) = rd.get_id().await {
+        let mut select_map = SelectMap::from_cache(&id, storage).await?;
+        select_map.insert(net_name.to_string(), selected);
+        select_map.write_cache(&id, storage).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

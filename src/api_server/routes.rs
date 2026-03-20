@@ -51,6 +51,7 @@ impl ApiServer {
         let ctx = Ctx {
             rd: self.rabbit_digger.clone(),
             cfg_mgr: self.config_manager.clone(),
+            policy: self.policy_runtime.clone(),
             userdata: Arc::new(FileStorage::new(FolderType::Data, "userdata").await?),
         };
 
@@ -61,6 +62,17 @@ impl ApiServer {
             )
             .route("/get", get(handlers::get_registry))
             .route("/state", get(handlers::get_state))
+            .route("/policy/state", get(handlers::get_policy_state))
+            .route("/policy/actions", get(handlers::get_policy_actions))
+            .route("/policy/suggestions", get(handlers::get_policy_suggestions))
+            .route(
+                "/policy/suggestions/{id}/approve",
+                post(handlers::approve_policy_suggestion),
+            )
+            .route(
+                "/policy/suggestions/{id}/reject",
+                post(handlers::reject_policy_suggestion),
+            )
             .route("/connection/{uuid}", delete(handlers::delete_conn))
             .route(
                 "/connection",
