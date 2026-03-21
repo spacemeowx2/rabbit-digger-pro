@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     time::SystemTime,
 };
 
@@ -40,6 +40,8 @@ pub enum PolicyActionKind {
     CooldownSkipped,
     ProbeFailed,
     TemporarySwitch,
+    OverlayApplied,
+    OverlayFailed,
     SuggestionCreated,
     SuggestionApproved,
     SuggestionRejected,
@@ -146,12 +148,31 @@ impl PolicyCoordinator {
     pub fn approved_target_for(&self, domain: &str, select_net: &str) -> Option<String> {
         self.suggestions
             .iter()
+            .rev()
             .find(|suggestion| {
                 suggestion.domain == domain
                     && suggestion.select_net == select_net
                     && suggestion.status == SuggestionStatus::Approved
             })
             .map(|suggestion| suggestion.suggested_target.clone())
+    }
+
+    pub fn latest_approved_suggestions(&self) -> Vec<PolicySuggestion> {
+        let mut seen = HashSet::new();
+        let mut approved = Vec::new();
+
+        for suggestion in self.suggestions.iter().rev() {
+            if suggestion.status != SuggestionStatus::Approved {
+                continue;
+            }
+            let key = format!("{}|{}", suggestion.domain, suggestion.select_net);
+            if seen.insert(key) {
+                approved.push(suggestion.clone());
+            }
+        }
+
+        approved.reverse();
+        approved
     }
 
     pub fn in_cooldown(&mut self, key: &str, now: u64) -> bool {
@@ -297,6 +318,51 @@ impl PolicyCoordinator {
             current_target: Some(suggestion.current_target.clone()),
             candidate: Some(suggested_target),
             detail: format!("created pending suggestion {}", suggestion.id),
+        });
+    }
+
+    pub fn record_overlay_applied(
+        &mut self,
+        domain: String,
+        select_net: String,
+        current_target: String,
+        suggested_target: String,
+        rule_nets: &[String],
+    ) {
+        self.push_action(PolicyActionRecord {
+            id: Uuid::new_v4().to_string(),
+            at: now_ts(),
+            kind: PolicyActionKind::OverlayApplied,
+            outcome: PolicyActionOutcome::Succeeded,
+            domain: Some(domain),
+            select_net: Some(select_net),
+            current_target: Some(current_target),
+            candidate: Some(suggested_target),
+            detail: format!(
+                "applied runtime overlay to rule nets [{}]",
+                rule_nets.join(", ")
+            ),
+        });
+    }
+
+    pub fn record_overlay_failed(
+        &mut self,
+        domain: String,
+        select_net: String,
+        current_target: String,
+        suggested_target: String,
+        detail: String,
+    ) {
+        self.push_action(PolicyActionRecord {
+            id: Uuid::new_v4().to_string(),
+            at: now_ts(),
+            kind: PolicyActionKind::OverlayFailed,
+            outcome: PolicyActionOutcome::Failed,
+            domain: Some(domain),
+            select_net: Some(select_net),
+            current_target: Some(current_target),
+            candidate: Some(suggested_target),
+            detail,
         });
     }
 

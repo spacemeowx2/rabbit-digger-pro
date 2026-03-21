@@ -194,6 +194,8 @@ impl RabbitDigger {
     // start all server, all server run in background.
     pub async fn start(&self, mut config: config::Config) -> Result<()> {
         let inner = &self.inner;
+        let mut config_with_details = config.clone();
+        config::init_default_net(&mut config_with_details.net)?;
 
         tracing::debug!("Registry:\n{}", self.registry);
 
@@ -219,7 +221,7 @@ impl RabbitDigger {
         *state = State::Running(Running {
             config: RwLock::new(SerializedConfig {
                 all_fields: serialize_with_fields(ALL_SERIALIZE_FIELDS.to_vec(), || {
-                    serde_json::to_string(&config)
+                    serde_json::to_string(&config_with_details)
                 })?,
                 simple_fields: serde_json::to_string(&config)?,
                 id: config.id,
@@ -338,6 +340,7 @@ impl RabbitDigger {
                 {
                     let mut new_cfg = cfg.clone();
                     update(&mut new_cfg);
+                    let preserved_opt = new_cfg.opt.clone();
 
                     let net = self
                         .registry
@@ -350,6 +353,7 @@ impl RabbitDigger {
                                 .map(|i| i.as_net())
                                 .ok_or_else(|| Error::NotFound(name.to_string()))
                         })?;
+                    new_cfg.opt = preserved_opt;
                     running_net.update_net(net);
 
                     *cfg = new_cfg;
@@ -382,6 +386,17 @@ impl RabbitDigger {
         let state = self.inner.state.read().await;
         match state.running() {
             Some(i) => Ok(f(&*i.config.read().await.simple_fields)),
+            None => Err(anyhow!("Not running")),
+        }
+    }
+
+    pub async fn get_config_all_fields<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&str) -> R,
+    {
+        let state = self.inner.state.read().await;
+        match state.running() {
+            Some(i) => Ok(f(&*i.config.read().await.all_fields)),
             None => Err(anyhow!("Not running")),
         }
     }
