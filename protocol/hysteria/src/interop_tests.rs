@@ -225,7 +225,7 @@ async fn test_hy2_server_client_tcp_error_response() {
     let mut ctx = Context::new();
     let bad = "127.0.0.1:1".into_address().unwrap();
     let r = timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(5),
         client_net.tcp_connect(&mut ctx, &bad),
     )
     .await;

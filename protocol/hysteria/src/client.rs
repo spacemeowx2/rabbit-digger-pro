@@ -1,7 +1,6 @@
 use std::{fs, net::SocketAddr, path::Path, sync::Arc};
 
 use bytes::Bytes;
-use futures_util::future::poll_fn;
 use h3::client::SendRequest;
 use http::{Request, StatusCode};
 use quinn::crypto::rustls::QuicClientConfig;
@@ -65,7 +64,7 @@ pub struct HysteriaNet {
 struct Hy2Client {
     _endpoint: quinn::Endpoint,
     conn: quinn::Connection,
-    _h3_driver: tokio::task::JoinHandle<()>,
+    _h3_conn: h3::client::Connection<h3_quinn::Connection, Bytes>,
     _h3_send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     udp: Option<Arc<Hy2Udp>>,
 }
@@ -111,10 +110,15 @@ impl Hy2Client {
         transport_config.datagram_send_buffer_size(1024 * 1024);
         client_config.transport_config(Arc::new(transport_config));
 
+        let default_bind = if server_addr.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
         let bind: SocketAddr = cfg
             .bind
             .as_deref()
-            .unwrap_or("[::]:0")
+            .unwrap_or(default_bind)
             .parse()
             .map_err(map_other)?;
 
@@ -138,19 +142,30 @@ impl Hy2Client {
             .connect(server_addr, &server_name)
             .map_err(map_other)?
             .await
-            .map_err(map_other)?;
+            .map_err(|e| Error::Other(format!("quic connect failed: {e:?}").into()))?;
 
-        let (h3_driver, h3_send, udp_supported) = hy2_auth(cfg, &conn).await?;
+        let (h3_conn, h3_send, udp_supported) = hy2_auth(cfg, &conn)
+            .await
+            .map_err(|e| attach_close_reason("hy2 auth failed", &conn, e))?;
         let udp =
             (cfg.udp && udp_supported).then(|| Arc::new(Hy2Udp::new(conn.clone(), net.clone())));
 
         Ok(Self {
             _endpoint: endpoint,
             conn,
-            _h3_driver: h3_driver,
+            _h3_conn: h3_conn,
             _h3_send: h3_send,
             udp,
         })
+    }
+}
+
+fn attach_close_reason(context: &str, conn: &quinn::Connection, err: Error) -> Error {
+    match conn.close_reason() {
+        Some(close_reason) => {
+            Error::Other(format!("{context}: {err:?}; close_reason={close_reason:?}").into())
+        }
+        None => err,
     }
 }
 
@@ -158,18 +173,14 @@ async fn hy2_auth(
     cfg: &HysteriaNetConfig,
     conn: &quinn::Connection,
 ) -> Result<(
-    tokio::task::JoinHandle<()>,
+    h3::client::Connection<h3_quinn::Connection, Bytes>,
     SendRequest<h3_quinn::OpenStreams, Bytes>,
     bool,
 )> {
     let quinn_conn = h3_quinn::Connection::new(conn.clone());
-    let (mut h3_conn, mut send_request) = h3::client::new(quinn_conn).await.map_err(map_other)?;
-
-    // Keep the H3 connection driven in the background; otherwise the request/response
-    // machinery may stall.
-    let driver = tokio::spawn(async move {
-        let _ = poll_fn(|cx| h3_conn.poll_close(cx)).await;
-    });
+    let (h3_conn, mut send_request) = h3::client::new(quinn_conn)
+        .await
+        .map_err(|e| Error::Other(format!("h3 client init failed: {e:?}").into()))?;
 
     let mut builder = Request::builder()
         .method("POST")
@@ -183,9 +194,18 @@ async fn hy2_auth(
 
     let req = builder.body(()).map_err(map_other)?;
 
-    let mut stream = send_request.send_request(req).await.map_err(map_other)?;
-    stream.finish().await.map_err(map_other)?;
-    let resp = stream.recv_response().await.map_err(map_other)?;
+    let mut stream = send_request
+        .send_request(req)
+        .await
+        .map_err(|e| Error::Other(format!("auth request send failed: {e:?}").into()))?;
+    stream
+        .finish()
+        .await
+        .map_err(|e| Error::Other(format!("auth request finish failed: {e:?}").into()))?;
+    let resp = stream
+        .recv_response()
+        .await
+        .map_err(|e| Error::Other(format!("auth response receive failed: {e:?}").into()))?;
 
     if resp.status() != StatusCode::from_u16(233).unwrap() {
         return Err(Error::Other(
@@ -200,7 +220,7 @@ async fn hy2_auth(
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    Ok((driver, send_request, udp_supported))
+    Ok((h3_conn, send_request, udp_supported))
 }
 
 fn resolve_server_name(cfg: &HysteriaNetConfig) -> Result<String> {
@@ -256,7 +276,14 @@ impl rd_interface::TcpConnect for HysteriaNet {
     ) -> Result<TcpStream> {
         let _ = ctx;
         let client = self.get_client().await?;
-        let (mut send, recv) = client.conn.open_bi().await.map_err(map_other)?;
+        let (mut send, recv) = client
+            .conn
+            .open_bi()
+            .await
+            .map_err(map_other)
+            .map_err(|e| {
+                attach_close_reason("failed to open bidirectional stream", &client.conn, e)
+            })?;
 
         let mut req = Vec::with_capacity(64);
         let padding = if self.cfg.padding {

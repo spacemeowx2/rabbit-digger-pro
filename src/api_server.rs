@@ -40,6 +40,10 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_tungstenite::connect_async;
 
+    fn test_http_client() -> reqwest::Client {
+        reqwest::Client::builder().no_proxy().build().unwrap()
+    }
+
     #[tokio::test]
     async fn test_api_server_smoke_http() {
         let app = crate::App::new().await.unwrap();
@@ -59,7 +63,7 @@ mod tests {
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
 
-        let client = reqwest::Client::new();
+        let client = test_http_client();
 
         async fn get_until_ok(client: &reqwest::Client, url: String) -> reqwest::Response {
             for _ in 0..100 {
@@ -165,7 +169,7 @@ mod tests {
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
 
-        let client = reqwest::Client::new();
+        let client = test_http_client();
         let r = client
             .get(format!("{base}/index.html"))
             .send()
@@ -193,7 +197,7 @@ mod tests {
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
 
-        let client = reqwest::Client::new();
+        let client = test_http_client();
 
         let r = client
             .get(format!("{base}/api/state"))
@@ -238,7 +242,7 @@ mod tests {
         let base = format!("http://{addr}");
         let ws_base = format!("ws://{addr}");
 
-        let client = reqwest::Client::new();
+        let client = test_http_client();
 
         // Wait for rd to be fully running.
         for _ in 0..100 {

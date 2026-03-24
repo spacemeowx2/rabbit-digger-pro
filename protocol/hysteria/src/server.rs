@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
-    fs, io,
+    fs,
+    future::pending,
+    io,
     net::SocketAddr,
     path::Path,
     sync::Arc,
@@ -145,10 +147,10 @@ async fn handle_connection(
         .await
         .map_err(map_other)?;
     hy2_auth_server(&mut h3_conn, &cfg).await?;
-
-    // Keep driving the HTTP/3 connection after auth. Some implementations may
-    // send additional requests, and not polling h3 control streams can stall.
-    let h3_drain = tokio::spawn(async move { hy2_h3_drain(h3_conn).await });
+    let h3_guard = tokio::spawn(async move {
+        let _h3_conn = h3_conn;
+        pending::<()>().await;
+    });
 
     let udp_handle = if cfg.udp {
         Some(tokio::spawn(hy2_udp_loop(connection.clone(), net.clone())))
@@ -174,24 +176,8 @@ async fn handle_connection(
     if let Some(h) = udp_handle {
         h.abort();
     }
-
-    h3_drain.abort();
+    h3_guard.abort();
     Ok(())
-}
-
-async fn hy2_h3_drain(mut h3_conn: h3::server::Connection<h3_quinn::Connection, Bytes>) {
-    loop {
-        let resolver = match h3_conn.accept().await {
-            Ok(Some(r)) => r,
-            Ok(None) => return,
-            Err(_) => return,
-        };
-        let (_req, stream) = match resolver.resolve_request().await {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        let _ = respond_not_found(stream).await;
-    }
 }
 
 async fn hy2_auth_server(

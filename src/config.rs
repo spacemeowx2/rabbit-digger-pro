@@ -68,7 +68,23 @@ async fn config_storage() -> &'static FileStorage {
 }
 
 async fn fetch(url: &str) -> Result<String> {
-    let content = reqwest::get(url)
+    let client = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .filter(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        })
+        .map(|_| reqwest::Client::builder().no_proxy().build())
+        .transpose()?
+        .unwrap_or_else(reqwest::Client::new);
+
+    let content = client
+        .get(url)
+        .send()
         .await
         .context("reqwest::get")?
         .text()
