@@ -7,8 +7,37 @@ on:
   workflow_dispatch:
 
 jobs:
+  check_changes:
+    name: Check for new commits
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      has_changes: ${{ steps.compare.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Compare HEAD with nightly tag
+        id: compare
+        run: |
+          HEAD_SHA=$(git rev-parse HEAD)
+          # Fetch the nightly tag if it exists (ignore errors when it doesn't)
+          git fetch origin refs/tags/nightly:refs/tags/nightly 2>/dev/null || true
+          # Dereference to commit SHA (works for both lightweight and annotated tags)
+          NIGHTLY_SHA=$(git rev-parse --verify refs/tags/nightly^{commit} 2>/dev/null || echo "")
+          if [ "$HEAD_SHA" = "$NIGHTLY_SHA" ]; then
+            echo "No new commits since last nightly build."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commits detected."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build
+    needs: check_changes
+    if: needs.check_changes.outputs.has_changes == 'true'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -57,6 +86,8 @@ jobs:
 
   cross_compile:
     name: Cross compile
+    needs: check_changes
+    if: needs.check_changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
