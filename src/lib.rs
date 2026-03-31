@@ -28,6 +28,8 @@ pub fn get_registry() -> Result<Registry> {
     registry.init_with_registry("obfs", obfs::init)?;
     #[cfg(feature = "hysteria")]
     registry.init_with_registry("hysteria", hysteria::init)?;
+    #[cfg(feature = "vless")]
+    registry.init_with_registry("vless", vless::init)?;
 
     registry.init_with_registry("rabbit-digger-pro", select::init)?;
 
