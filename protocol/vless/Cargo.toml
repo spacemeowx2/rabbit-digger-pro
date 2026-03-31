@@ -20,8 +20,15 @@ webpki-roots = "0.26.11"
 hex = "0.4.3"
 reality = { git = "https://github.com/eycorsican/reality-rs.git" }
 reality-rustls = { package = "rustls", git = "https://github.com/eycorsican/reality-rustls.git", branch = "reality-rebase-0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tls-parser = "0.12.2"
+x25519-dalek = "2.0.1"
+hkdf = "0.12.4"
+hmac = "0.12.1"
+sha2 = "0.10.9"
+aes-gcm = "0.10.3"
+rcgen = "0.13"
+yasna = "0.5.2"
 
 [dev-dependencies]
-rcgen = "0.13"
 tempfile = "3.24.0"
 serde_json = "1.0"

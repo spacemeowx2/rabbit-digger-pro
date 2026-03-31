@@ -5098,10 +5098,13 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vless"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "base64 0.22.1",
  "bytes",
  "futures",
  "hex",
+ "hkdf",
+ "hmac",
  "rcgen",
  "rd-interface",
  "rd-std",
@@ -5110,13 +5113,17 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tls-parser",
  "tokio",
  "tokio-rustls",
  "tokio-util",
  "tracing",
  "uuid",
  "webpki-roots 0.26.11",
+ "x25519-dalek",
+ "yasna",
 ]
 
 [[package]]

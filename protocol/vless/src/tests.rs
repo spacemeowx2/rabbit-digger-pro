@@ -46,6 +46,9 @@ async fn test_vless_server_client() {
         flow: Some(crate::common::FLOW_VISION.to_string()),
         tls_cert: cert_path,
         tls_key: key_path,
+        reality_server_name: None,
+        reality_private_key: None,
+        reality_short_id: None,
         udp: true,
     };
     let server = server::VlessServer::new(server_cfg).unwrap();

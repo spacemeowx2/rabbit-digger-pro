@@ -275,10 +275,6 @@ pub struct VisionStream<S> {
 }
 
 impl<S> VisionStream<S> {
-    pub fn new(inner: S, user_id: &UserId) -> Self {
-        Self::new_with_shared(inner, user_id, None)
-    }
-
     pub fn new_with_shared(
         inner: S,
         user_id: &UserId,

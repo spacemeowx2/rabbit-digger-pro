@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::common::{
     build_server_config, read_request_header, relay_stream_udp, write_response_header,
     NormalizedFlow, UserId, VisionStream, COMMAND_MUX, COMMAND_TCP, FLOW_VISION, MUX_DOMAIN,
     MUX_PORT,
 };
+use crate::reality::{accept_reality_stream, RealityServerConfig};
 use rd_interface::{async_trait, config::NetRef, prelude::*, Address, IServer, Net, Result};
 use rd_std::ContextExt;
 use tokio_rustls::TlsAcceptor;
@@ -21,8 +22,17 @@ pub struct VlessServerConfig {
     #[serde(default = "default_flow")]
     pub(crate) flow: Option<String>,
 
+    #[serde(default)]
     pub(crate) tls_cert: String,
+    #[serde(default)]
     pub(crate) tls_key: String,
+
+    #[serde(default)]
+    pub(crate) reality_server_name: Option<String>,
+    #[serde(default)]
+    pub(crate) reality_private_key: Option<String>,
+    #[serde(default)]
+    pub(crate) reality_short_id: Option<String>,
 
     #[serde(default)]
     pub(crate) udp: bool,
@@ -41,18 +51,36 @@ pub struct VlessServer {
     bind: Address,
     user_id: UserId,
     flow: NormalizedFlow,
-    acceptor: TlsAcceptor,
+    acceptor: ServerAcceptor,
     udp: bool,
     listen: Net,
     net: Net,
 }
 
+#[derive(Clone)]
+enum ServerAcceptor {
+    Tls(TlsAcceptor),
+    Reality(Arc<RealityServerConfig>),
+}
+
 impl VlessServer {
     pub fn new(config: VlessServerConfig) -> Result<Self> {
-        let acceptor = TlsAcceptor::from(Arc::new(build_server_config(
-            &config.tls_cert,
-            &config.tls_key,
-        )?));
+        let acceptor = match config.reality_private_key.clone() {
+            Some(private_key) => ServerAcceptor::Reality(Arc::new(RealityServerConfig {
+                server_name: config.reality_server_name.clone().ok_or_else(|| {
+                    rd_interface::Error::other(
+                        "reality_server_name is required when reality_private_key is set",
+                    )
+                })?,
+                private_key,
+                short_id: config.reality_short_id.clone(),
+                max_time_diff: None,
+            })),
+            None => ServerAcceptor::Tls(TlsAcceptor::from(Arc::new(build_server_config(
+                &config.tls_cert,
+                &config.tls_key,
+            )?))),
+        };
         Ok(Self {
             bind: config.bind,
             user_id: UserId::parse(&config.id)?,
@@ -64,19 +92,18 @@ impl VlessServer {
         })
     }
 
-    async fn serve_connection(
-        acceptor: TlsAcceptor,
+    async fn serve_vless_stream<S>(
         user_id: UserId,
         flow: NormalizedFlow,
         udp: bool,
         net: Net,
-        socket: rd_interface::TcpStream,
+        mut stream: S,
         peer: std::net::SocketAddr,
-    ) -> Result<()> {
-        let mut stream = acceptor
-            .accept(socket)
-            .await
-            .map_err(rd_interface::error::map_other)?;
+        shared_read_raw: Option<Arc<AtomicBool>>,
+    ) -> Result<()>
+    where
+        S: rd_interface::AsyncRead + rd_interface::AsyncWrite + Unpin + Send + 'static,
+    {
         let request = read_request_header(&mut stream, &user_id).await?;
         if request.flow != flow {
             return Err(rd_interface::Error::other(format!(
@@ -91,8 +118,11 @@ impl VlessServer {
                 let outbound = net.tcp_connect(&mut ctx, &request.addr).await?;
                 write_response_header(&mut stream).await?;
                 if flow.is_vision() {
-                    ctx.connect_tcp(VisionStream::new(stream, &user_id), outbound)
-                        .await?;
+                    ctx.connect_tcp(
+                        VisionStream::new_with_shared(stream, &user_id, shared_read_raw),
+                        outbound,
+                    )
+                    .await?;
                 } else {
                     ctx.connect_tcp(stream, outbound).await?;
                 }
@@ -103,7 +133,11 @@ impl VlessServer {
                     && matches!(&request.addr, Address::Domain(domain, port) if domain == MUX_DOMAIN && *port == MUX_PORT) =>
             {
                 write_response_header(&mut stream).await?;
-                relay_stream_udp(VisionStream::new(stream, &user_id), net).await?;
+                relay_stream_udp(
+                    VisionStream::new_with_shared(stream, &user_id, shared_read_raw),
+                    net,
+                )
+                .await?;
             }
             _ => {
                 return Err(rd_interface::Error::other(format!(
@@ -114,6 +148,32 @@ impl VlessServer {
         }
 
         Ok(())
+    }
+
+    async fn serve_connection(
+        acceptor: ServerAcceptor,
+        user_id: UserId,
+        flow: NormalizedFlow,
+        udp: bool,
+        net: Net,
+        socket: rd_interface::TcpStream,
+        peer: std::net::SocketAddr,
+    ) -> Result<()> {
+        match acceptor {
+            ServerAcceptor::Tls(acceptor) => {
+                let stream = acceptor
+                    .accept(socket)
+                    .await
+                    .map_err(rd_interface::error::map_other)?;
+                Self::serve_vless_stream(user_id, flow, udp, net, stream, peer, None).await
+            }
+            ServerAcceptor::Reality(cfg) => {
+                let shared_read_raw = flow.is_vision().then(|| Arc::new(AtomicBool::new(false)));
+                let stream = accept_reality_stream(socket, &cfg, shared_read_raw.clone()).await?;
+                Self::serve_vless_stream(user_id, flow, udp, net, stream, peer, shared_read_raw)
+                    .await
+            }
+        }
     }
 }
 

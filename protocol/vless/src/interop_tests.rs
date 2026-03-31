@@ -242,6 +242,9 @@ async fn test_xray_client_with_rdp_server_tcp_udp() {
         flow: Some(crate::common::FLOW_VISION.to_string()),
         tls_cert: cert_path,
         tls_key: key_path,
+        reality_server_name: None,
+        reality_private_key: None,
+        reality_short_id: None,
         udp: true,
         net: NetRef::new_with_value("out".into(), outbound.clone()),
         listen: NetRef::new_with_value("out".into(), outbound.clone()),
@@ -466,4 +469,161 @@ async fn test_xray_reality_server_with_rdp_client_tcp_udp() {
     assert_eq!(rb.filled(), b"ping");
 
     let _ = child.kill().await;
+}
+
+#[tokio::test]
+async fn test_xray_client_with_rdp_reality_server_tcp_udp() {
+    let Some(bin) = xray_bin() else {
+        eprintln!("XRAY_BIN not set; skipping xray reality interop test");
+        return;
+    };
+
+    let uuid = "27848739-7e61-4ea0-ba56-d8edf2587d12";
+    let (private_key, public_key) = xray_x25519(&bin).await;
+    let outbound = local_net();
+
+    let echo_tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_tcp_addr = echo_tcp.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = echo_tcp.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                loop {
+                    let n = match sock.read(&mut buf).await {
+                        Ok(0) => return,
+                        Ok(n) => n,
+                        Err(_) => return,
+                    };
+                    if sock.write_all(&buf[..n]).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    let echo_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let echo_udp_addr = echo_udp.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        loop {
+            let (n, from) = echo_udp.recv_from(&mut buf).await.unwrap();
+            let _ = echo_udp.send_to(&buf[..n], from).await;
+        }
+    });
+
+    let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server_addr = probe.local_addr().unwrap();
+    drop(probe);
+    let server = crate::server::VlessServer::new(VlessServerConfig {
+        bind: server_addr.into(),
+        id: uuid.to_string(),
+        flow: Some(crate::common::FLOW_VISION.to_string()),
+        tls_cert: String::new(),
+        tls_key: String::new(),
+        reality_server_name: Some("www.microsoft.com".to_string()),
+        reality_private_key: Some(private_key),
+        reality_short_id: Some("00000000".to_string()),
+        udp: true,
+        net: NetRef::new_with_value("out".into(), outbound.clone()),
+        listen: NetRef::new_with_value("out".into(), outbound.clone()),
+    })
+    .unwrap();
+    let server_task = tokio::spawn(async move { server.start().await });
+    sleep(Duration::from_secs(1)).await;
+
+    let client_tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client_tcp_addr = client_tcp.local_addr().unwrap();
+    drop(client_tcp);
+    let client_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let client_udp_addr = client_udp.local_addr().unwrap();
+    drop(client_udp);
+
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("reality-client.json");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"{{
+  "log": {{ "loglevel": "warning" }},
+  "inbounds": [
+    {{
+      "listen": "127.0.0.1",
+      "port": {tcp_port},
+      "protocol": "dokodemo-door",
+      "settings": {{
+        "address": "127.0.0.1",
+        "port": {echo_tcp_port},
+        "network": "tcp"
+      }}
+    }},
+    {{
+      "listen": "127.0.0.1",
+      "port": {udp_port},
+      "protocol": "dokodemo-door",
+      "settings": {{
+        "address": "127.0.0.1",
+        "port": {echo_udp_port},
+        "network": "udp"
+      }}
+    }}
+  ],
+  "outbounds": [{{
+    "protocol": "vless",
+    "settings": {{
+      "vnext": [{{
+        "address": "127.0.0.1",
+        "port": {server_port},
+        "users": [{{
+          "id": "{uuid}",
+          "encryption": "none",
+          "flow": "xtls-rprx-vision"
+        }}]
+      }}]
+    }},
+    "streamSettings": {{
+      "network": "tcp",
+      "security": "reality",
+      "realitySettings": {{
+        "show": false,
+        "serverName": "www.microsoft.com",
+        "fingerprint": "chrome",
+        "publicKey": "{public_key}",
+        "shortId": "00000000"
+      }}
+    }}
+  }}]
+}}"#,
+            tcp_port = client_tcp_addr.port(),
+            udp_port = client_udp_addr.port(),
+            echo_tcp_port = echo_tcp_addr.port(),
+            echo_udp_port = echo_udp_addr.port(),
+            server_port = server_addr.port(),
+        ),
+    )
+    .unwrap();
+
+    let mut child = spawn_xray(&bin, &config_path).await;
+
+    let mut tcp = TcpStream::connect(client_tcp_addr).await.unwrap();
+    tcp.write_all(b"hello").await.unwrap();
+    let mut buf = [0u8; 5];
+    timeout(Duration::from_secs(5), tcp.read_exact(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&buf, b"hello");
+
+    let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    udp.send_to(b"ping", client_udp_addr).await.unwrap();
+    let mut ubuf = [0u8; 64];
+    let (n, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut ubuf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(&ubuf[..n], b"ping");
+
+    let _ = child.kill().await;
+    server_task.abort();
 }
