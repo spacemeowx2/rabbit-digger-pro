@@ -12,9 +12,9 @@ use std::{
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use rd_interface::{error::map_other, Address, AsyncRead, AsyncWrite, ReadBuf, Result};
+use rustls::crypto::ring::default_provider;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls::{
-    crypto::ring::default_provider,
     pki_types::{CertificateDer, PrivateKeyDer},
     ServerConfig,
 };

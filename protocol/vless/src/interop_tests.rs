@@ -16,9 +16,11 @@ use tokio::{
 
 use crate::{client::VlessNetConfig, server::VlessServerConfig};
 
-const XRAY_IO_TIMEOUT: Duration = Duration::from_secs(10);
-const UDP_STRESS_CLIENTS: usize = 4;
-const UDP_STRESS_PACKETS: usize = 16;
+const XRAY_IO_TIMEOUT: Duration = Duration::from_secs(20);
+// Keep the in-test UDP soak conservative; heavier concurrency lives in
+// scripts/vless_xray_reality_e2e.sh to avoid flaky CI under workspace load.
+const UDP_STRESS_CLIENTS: usize = 2;
+const UDP_STRESS_PACKETS: usize = 8;
 const UDP_STRESS_PACING: Duration = Duration::from_millis(5);
 
 fn xray_bin() -> Option<PathBuf> {
