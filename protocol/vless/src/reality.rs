@@ -1,5 +1,5 @@
 use std::{
-    io::{self, ErrorKind, Read, Write},
+    io::{self, Cursor, ErrorKind, Read, Write},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -19,8 +19,10 @@ use reality::{RealityConnectionState, X25519RealityGroup};
 use reality_rustls::crypto::ring::default_provider;
 use reality_rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use reality_rustls::{
-    client::WebPkiServerVerifier, sign::CertifiedKey as RustlsCertifiedKey, sign::SingleCertAndKey,
+    client::Resumption, client::WebPkiServerVerifier, sign::CertifiedKey as RustlsCertifiedKey,
+    sign::Signer as RustlsSigner, sign::SigningKey as RustlsSigningKey, sign::SingleCertAndKey,
     ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection,
+    SignatureAlgorithm, SignatureScheme,
 };
 use sha2::{Sha256, Sha512};
 use tls_parser::{
@@ -156,6 +158,9 @@ fn parse_client_key_share(data: &[u8]) -> io::Result<[u8; 32]> {
             "truncated reality key share list",
         ));
     }
+
+    let mut direct_x25519 = None;
+    let mut hybrid_x25519 = None;
     let mut offset = 2;
     while offset + 4 <= 2 + total_len {
         let group = u16::from_be_bytes([data[offset], data[offset + 1]]);
@@ -173,20 +178,23 @@ fn parse_client_key_share(data: &[u8]) -> io::Result<[u8; 32]> {
             29 if key_data.len() == 32 => {
                 let mut peer_public_key = [0u8; 32];
                 peer_public_key.copy_from_slice(key_data);
-                return Ok(peer_public_key);
+                direct_x25519 = Some(peer_public_key);
             }
             4588 if key_data.len() >= 32 => {
                 let mut peer_public_key = [0u8; 32];
-                peer_public_key.copy_from_slice(&key_data[key_data.len() - 32..]);
-                return Ok(peer_public_key);
+                peer_public_key.copy_from_slice(&key_data[..32]);
+                hybrid_x25519 = Some(peer_public_key);
             }
             _ => {}
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::InvalidData,
-        "no supported reality key share found",
-    ))
+
+    direct_x25519.or(hybrid_x25519).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "no supported reality key share found",
+        )
+    })
 }
 
 fn parse_reality_client_hello(
@@ -382,7 +390,10 @@ fn build_reality_server_config(
         .load_private_key(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der)))
         .map_err(map_other)
         .map_err(rd_interface::Error::to_io_err)?;
-    let certified_key = RustlsCertifiedKey::new(vec![CertificateDer::from(cert_der)], signing_key);
+    let certified_key = RustlsCertifiedKey::new(
+        vec![CertificateDer::from(cert_der)],
+        Arc::new(RelaxedEd25519SigningKey(signing_key)),
+    );
     let config = ServerConfig::builder_with_provider(Arc::new(provider))
         .with_safe_default_protocol_versions()
         .unwrap()
@@ -393,6 +404,27 @@ fn build_reality_server_config(
 
 #[derive(Debug)]
 struct DebugVerifier(Arc<dyn reality_rustls::client::danger::ServerCertVerifier>);
+
+#[derive(Debug)]
+struct RelaxedEd25519SigningKey(Arc<dyn RustlsSigningKey>);
+
+impl RustlsSigningKey for RelaxedEd25519SigningKey {
+    fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn RustlsSigner>> {
+        self.0.choose_scheme(offered).or_else(|| {
+            (self.0.algorithm() == SignatureAlgorithm::ED25519)
+                .then(|| self.0.choose_scheme(&[SignatureScheme::ED25519]))
+                .flatten()
+        })
+    }
+
+    fn public_key(&self) -> Option<reality_rustls::pki_types::SubjectPublicKeyInfoDer<'_>> {
+        self.0.public_key()
+    }
+
+    fn algorithm(&self) -> SignatureAlgorithm {
+        self.0.algorithm()
+    }
+}
 
 impl reality_rustls::client::danger::ServerCertVerifier for DebugVerifier {
     fn verify_server_cert(
@@ -479,6 +511,7 @@ fn build_rustls_config(cfg: &RealityConfig) -> io::Result<Arc<ClientConfig>> {
         .with_no_client_auth();
 
     config.reality_callback = Some(reality_state);
+    config.resumption = Resumption::disabled();
     config.alpn_protocols = vec![b"h2".to_vec().into(), b"http/1.1".to_vec().into()];
 
     Ok(Arc::new(config))
@@ -623,7 +656,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RealityServerStream<S> {
             }
             Poll::Ready(Ok(()))
         })
-        .await
+        .await?;
+
+        Ok(())
     }
 
     fn pump_read(&mut self, cx: &mut Context<'_>) -> io::Result<usize> {
@@ -744,6 +779,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RealityServerStream<S> {
 pub(crate) struct RealityStream<S> {
     conn: ClientConnection,
     stream: S,
+    wr_buf: Vec<u8>,
+    wr_pos: usize,
     read_raw: bool,
     shared_read_raw: Option<Arc<AtomicBool>>,
 }
@@ -761,6 +798,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RealityStream<S> {
         Ok(Self {
             conn,
             stream,
+            wr_buf: Vec::with_capacity(4096),
+            wr_pos: 0,
             read_raw: false,
             shared_read_raw,
         })
@@ -818,45 +857,104 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RealityStream<S> {
             }
             Poll::Ready(Ok(()))
         })
-        .await
+        .await?;
+
+        self.flush_tls_output().await?;
+        self.read_post_handshake_record().await?;
+        self.drain_post_handshake_records().await?;
+        Ok(())
     }
 
-    fn pump_read(&mut self, cx: &mut Context<'_>) -> io::Result<usize> {
-        if self.conn.wants_read() {
-            let mut bridge = TlsBridge {
-                stream: Pin::new(&mut self.stream),
-                cx,
-                safe_byte_read: true,
-            };
-            match self.conn.read_tls(&mut bridge) {
-                Ok(0) => return Err(io::Error::new(ErrorKind::UnexpectedEof, "EOF")),
-                Ok(n) => {
-                    self.conn.process_new_packets().map_err(|e| {
-                        io::Error::new(ErrorKind::InvalidData, format!("TLS Error: {e}"))
-                    })?;
-                    return Ok(n);
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(0),
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(0)
-    }
-
-    fn pump_write(&mut self, cx: &mut Context<'_>) -> io::Result<bool> {
+    async fn flush_tls_output(&mut self) -> io::Result<()> {
+        let mut out = Vec::new();
         while self.conn.wants_write() {
-            let mut bridge = TlsBridge {
-                stream: Pin::new(&mut self.stream),
-                cx,
-                safe_byte_read: false,
-            };
-            match self.conn.write_tls(&mut bridge) {
-                Ok(_) => {}
-                Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(false),
-                Err(e) => return Err(e),
+            if self.conn.write_tls(&mut out)? == 0 {
+                break;
             }
         }
-        Ok(true)
+        if !out.is_empty() {
+            tokio::io::AsyncWriteExt::write_all(&mut self.stream, &out).await?;
+            tokio::io::AsyncWriteExt::flush(&mut self.stream).await?;
+        }
+        Ok(())
+    }
+
+    async fn drain_post_handshake_records(&mut self) -> io::Result<()> {
+        loop {
+            let mut buf = [0u8; 8192];
+            let Some(n) = std::future::poll_fn(|cx| -> Poll<io::Result<Option<usize>>> {
+                let mut rb = ReadBuf::new(&mut buf);
+                match Pin::new(&mut self.stream).poll_read(cx, &mut rb) {
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(Some(rb.filled().len()))),
+                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+                    Poll::Pending => Poll::Ready(Ok(None)),
+                }
+            })
+            .await?
+            else {
+                break;
+            };
+
+            if n == 0 {
+                break;
+            }
+
+            self.conn.read_tls(&mut Cursor::new(&buf[..n]))?;
+            self.conn
+                .process_new_packets()
+                .map_err(|e| io::Error::new(ErrorKind::InvalidData, format!("TLS Error: {e}")))?;
+            self.flush_tls_output().await?;
+        }
+
+        Ok(())
+    }
+
+    async fn read_post_handshake_record(&mut self) -> io::Result<()> {
+        let mut buf = [0u8; 8192];
+        // Official Xray REALITY servers may emit a post-handshake TLS record slightly after
+        // the client handshake loop completes. Waiting briefly here keeps interop stable.
+        if let Ok(Ok(n)) = tokio::time::timeout(
+            Duration::from_millis(100),
+            tokio::io::AsyncReadExt::read(&mut self.stream, &mut buf),
+        )
+        .await
+        {
+            if n > 0 {
+                self.conn.read_tls(&mut Cursor::new(&buf[..n]))?;
+                self.conn.process_new_packets().map_err(|e| {
+                    io::Error::new(ErrorKind::InvalidData, format!("TLS Error: {e}"))
+                })?;
+                self.flush_tls_output().await?;
+            }
+        }
+        Ok(())
+    }
+
+    fn produce_tls_output(&mut self) -> io::Result<()> {
+        if self.wr_pos == self.wr_buf.len() {
+            self.wr_buf.clear();
+            self.wr_pos = 0;
+        }
+        while self.conn.wants_write() {
+            self.conn.write_tls(&mut self.wr_buf)?;
+        }
+        Ok(())
+    }
+
+    fn poll_flush_wr(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while self.wr_pos < self.wr_buf.len() {
+            match Pin::new(&mut self.stream).poll_write(cx, &self.wr_buf[self.wr_pos..]) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(io::Error::from(io::ErrorKind::WriteZero)));
+                }
+                Poll::Ready(Ok(n)) => self.wr_pos += n,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        self.wr_buf.clear();
+        self.wr_pos = 0;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -881,8 +979,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RealityStream<S> {
             return Pin::new(&mut this.stream).poll_read(cx, buf);
         }
 
-        let _ = this.pump_write(cx)?;
-
         loop {
             let slice = buf.initialize_unfilled();
             match this.conn.reader().read(slice) {
@@ -890,19 +986,30 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RealityStream<S> {
                     buf.advance(n);
                     return Poll::Ready(Ok(()));
                 }
-                _ => {
-                    if this.conn.wants_read() {
-                        let n = this.pump_read(cx)?;
-                        if n == 0 {
-                            return Poll::Pending;
-                        }
-                    } else if this.conn.wants_write() {
-                        let _ = this.pump_write(cx)?;
-                        return Poll::Pending;
-                    } else {
+                Ok(_) | Err(_) => {}
+            }
+
+            this.produce_tls_output()?;
+            match this.poll_flush_wr(cx) {
+                Poll::Ready(Ok(())) | Poll::Pending => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            }
+
+            let mut tmp = [0u8; 4096];
+            let mut rb = ReadBuf::new(&mut tmp);
+            match Pin::new(&mut this.stream).poll_read(cx, &mut rb) {
+                Poll::Ready(Ok(())) => {
+                    let n = rb.filled().len();
+                    if n == 0 {
                         return Poll::Ready(Ok(()));
                     }
+                    this.conn.read_tls(&mut Cursor::new(rb.filled()))?;
+                    this.conn.process_new_packets().map_err(|e| {
+                        io::Error::new(ErrorKind::InvalidData, format!("TLS Error: {e}"))
+                    })?;
                 }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
             }
         }
     }
@@ -915,16 +1022,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RealityStream<S> {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        if this.wr_pos < this.wr_buf.len() {
+            match this.poll_flush_wr(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
         let n = this.conn.writer().write(buf)?;
-        let _ = this.pump_write(cx)?;
+        this.produce_tls_output()?;
+        let _ = this.poll_flush_wr(cx);
         Poll::Ready(Ok(n))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         this.conn.writer().flush()?;
-        if !this.pump_write(cx)? {
-            return Poll::Pending;
+        this.produce_tls_output()?;
+        match this.poll_flush_wr(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            Poll::Pending => return Poll::Pending,
         }
         Pin::new(&mut this.stream).poll_flush(cx)
     }
@@ -932,7 +1050,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RealityStream<S> {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         this.conn.send_close_notify();
-        let _ = this.pump_write(cx)?;
+        this.produce_tls_output()?;
+        match this.poll_flush_wr(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+            Poll::Pending => return Poll::Pending,
+        }
         Pin::new(&mut this.stream).poll_shutdown(cx)
     }
 }
@@ -970,4 +1093,44 @@ where
     let mut reality = RealityStream::new(config, server_name, stream, shared_read_raw)?;
     reality.perform_handshake().await?;
     Ok(reality)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_client_key_share;
+
+    fn encode_key_share(group: u16, key_data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let total_len = 4 + key_data.len();
+        out.extend_from_slice(&(total_len as u16).to_be_bytes());
+        out.extend_from_slice(&group.to_be_bytes());
+        out.extend_from_slice(&(key_data.len() as u16).to_be_bytes());
+        out.extend_from_slice(key_data);
+        out
+    }
+
+    #[test]
+    fn test_parse_client_key_share_prefers_direct_x25519() {
+        let direct = [0x11; 32];
+        let hybrid = [0x22; 64];
+        let mut buf = Vec::new();
+        let total_len = (4 + hybrid.len()) + (4 + direct.len());
+        buf.extend_from_slice(&(total_len as u16).to_be_bytes());
+        buf.extend_from_slice(&4588u16.to_be_bytes());
+        buf.extend_from_slice(&(hybrid.len() as u16).to_be_bytes());
+        buf.extend_from_slice(&hybrid);
+        buf.extend_from_slice(&29u16.to_be_bytes());
+        buf.extend_from_slice(&(direct.len() as u16).to_be_bytes());
+        buf.extend_from_slice(&direct);
+
+        assert_eq!(parse_client_key_share(&buf).unwrap(), direct);
+    }
+
+    #[test]
+    fn test_parse_client_key_share_falls_back_to_hybrid_prefix() {
+        let hybrid = [0x33; 64];
+        let buf = encode_key_share(4588, &hybrid);
+
+        assert_eq!(parse_client_key_share(&buf).unwrap(), [0x33; 32]);
+    }
 }

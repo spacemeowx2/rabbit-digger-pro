@@ -6,17 +6,25 @@ use std::{
 };
 
 use crate::common::{
-    write_request_header, NormalizedFlow, ResponseHeaderStream, UserId, VisionStream, XudpCodec,
-    COMMAND_MUX, COMMAND_TCP, FLOW_VISION, MUX_DOMAIN, MUX_PORT,
+    build_request_header, write_request_header, NormalizedFlow, PrefixWriteStream,
+    ResponseHeaderStream, UserId, VisionStream, XudpCodec, COMMAND_MUX, COMMAND_TCP, FLOW_VISION,
+    MUX_DOMAIN, MUX_PORT,
 };
 use crate::reality::{connect_reality_stream, RealityConfig};
 use bytes::Bytes;
 use futures::{ready, SinkExt, StreamExt};
 use rd_interface::{
-    async_trait, config::NetRef, prelude::*, registry::Builder, Address, Error, INet, IntoDyn, Net,
-    Result, TcpConnect, TcpStream, UdpSocket,
+    async_trait, config::NetRef, prelude::*, Address, Error, INet, IntoDyn, Net, Result, TcpStream,
+    UdpSocket,
 };
-use rd_std::tls::{TlsNet, TlsNetConfig};
+use tokio_rustls::{
+    rustls::{
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+        pki_types::{CertificateDer, ServerName, UnixTime},
+        ClientConfig, DigitallySignedStruct, RootCertStore,
+    },
+    TlsConnector,
+};
 use tokio_util::codec::Framed;
 
 #[rd_config]
@@ -71,33 +79,113 @@ pub struct VlessNet {
 }
 
 enum Transport {
-    Tls(TlsNet),
-    Reality { net: Net, config: RealityConfig },
+    Tls {
+        net: Net,
+        server_name: String,
+        connector: TlsConnector,
+    },
+    Reality {
+        net: Net,
+        config: RealityConfig,
+    },
+}
+
+#[derive(Debug)]
+struct AllowAnyCert(Arc<dyn ServerCertVerifier>);
+
+impl ServerCertVerifier for AllowAnyCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> std::result::Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        self.0.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        self.0.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        self.0.supported_verify_schemes()
+    }
 }
 
 impl VlessNet {
     pub fn new(config: VlessNetConfig) -> Result<Self> {
-        let transport = match config.reality_public_key {
+        let VlessNetConfig {
+            net,
+            server,
+            id,
+            flow,
+            sni,
+            skip_cert_verify,
+            udp,
+            client_fingerprint,
+            reality_public_key,
+            reality_short_id,
+        } = config;
+
+        let transport = match reality_public_key {
             Some(public_key) => Transport::Reality {
-                net: config.net.value_cloned(),
+                net: net.value_cloned(),
                 config: RealityConfig {
-                    server_name: config.sni.unwrap_or_else(|| config.server.host()),
+                    server_name: sni.unwrap_or_else(|| server.host()),
                     public_key,
-                    short_id: config.reality_short_id,
-                    client_fingerprint: config.client_fingerprint,
+                    short_id: reality_short_id,
+                    client_fingerprint,
                 },
             },
-            None => Transport::Tls(TlsNet::build(TlsNetConfig {
-                skip_cert_verify: config.skip_cert_verify,
-                sni: config.sni,
-                net: config.net,
-            })?),
+            None => {
+                let server_name = sni.unwrap_or_else(|| server.host());
+                let mut roots = RootCertStore::empty();
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let roots = Arc::new(roots);
+
+                let builder = ClientConfig::builder();
+                let client_config = if skip_cert_verify {
+                    let verifier =
+                        tokio_rustls::rustls::client::WebPkiServerVerifier::builder(roots)
+                            .build()
+                            .map_err(rd_interface::error::map_other)?;
+                    builder
+                        .dangerous()
+                        .with_custom_certificate_verifier(Arc::new(AllowAnyCert(verifier)))
+                        .with_no_client_auth()
+                } else {
+                    builder.with_root_certificates(roots).with_no_client_auth()
+                };
+                let mut client_config = client_config;
+                client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+                Transport::Tls {
+                    net: net.value_cloned(),
+                    server_name,
+                    connector: TlsConnector::from(Arc::new(client_config)),
+                }
+            }
         };
         Ok(Self {
-            server: config.server,
-            user_id: UserId::parse(&config.id)?,
-            flow: NormalizedFlow::parse(config.flow)?,
-            udp: config.udp,
+            server,
+            user_id: UserId::parse(&id)?,
+            flow: NormalizedFlow::parse(flow)?,
+            udp,
             transport,
         })
     }
@@ -108,7 +196,20 @@ impl VlessNet {
         shared_read_raw: Option<Arc<AtomicBool>>,
     ) -> Result<TcpStream> {
         match &self.transport {
-            Transport::Tls(tls) => tls.tcp_connect(ctx, &self.server).await,
+            Transport::Tls {
+                net,
+                server_name,
+                connector,
+            } => {
+                let stream = net.tcp_connect(ctx, &self.server).await?;
+                let server_name = ServerName::try_from(server_name.clone())
+                    .map_err(rd_interface::error::map_other)?;
+                let tls = connector
+                    .connect(server_name, stream)
+                    .await
+                    .map_err(rd_interface::error::map_other)?;
+                Ok(TcpStream::from(tls))
+            }
             Transport::Reality { net, config } => {
                 let stream = net.tcp_connect(ctx, &self.server).await?;
                 let reality = connect_reality_stream(stream, config, shared_read_raw)
@@ -131,9 +232,10 @@ impl rd_interface::TcpConnect for VlessNet {
             .flow
             .is_vision()
             .then(|| Arc::new(AtomicBool::new(false)));
-        let mut stream = self.connect_stream(ctx, shared_read_raw.clone()).await?;
-        write_request_header(&mut stream, &self.user_id, &self.flow, COMMAND_TCP, addr).await?;
-        let stream = ResponseHeaderStream::new(stream);
+        let stream = self.connect_stream(ctx, shared_read_raw.clone()).await?;
+        let header = build_request_header(&self.user_id, &self.flow, COMMAND_TCP, addr)
+            .map_err(rd_interface::error::map_other)?;
+        let stream = ResponseHeaderStream::new(PrefixWriteStream::new(stream, header));
 
         let stream = if self.flow.is_vision() {
             TcpStream::from(VisionStream::new_with_shared(

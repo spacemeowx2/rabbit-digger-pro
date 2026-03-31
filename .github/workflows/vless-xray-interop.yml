@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: VLESS Xray Interop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  interop:
+    name: Real Xray REALITY Interop
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo
+          key: macos-latest-stable-cargo-v1
+          restore-keys: |
+            macos-latest-stable-cargo-v1
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Xray
+        run: brew install xray
+
+      - name: Run VLESS package tests against real Xray
+        run: cargo test -p vless -- --nocapture
+
+      - name: Run real curl-through-proxy interop script
+        run: bash scripts/vless_xray_reality_e2e.sh

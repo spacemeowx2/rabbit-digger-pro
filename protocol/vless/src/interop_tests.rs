@@ -1,6 +1,6 @@
 use std::{
+    net::SocketAddr,
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 
@@ -16,8 +16,22 @@ use tokio::{
 
 use crate::{client::VlessNetConfig, server::VlessServerConfig};
 
+const XRAY_IO_TIMEOUT: Duration = Duration::from_secs(10);
+const UDP_STRESS_CLIENTS: usize = 4;
+const UDP_STRESS_PACKETS: usize = 16;
+const UDP_STRESS_PACING: Duration = Duration::from_millis(5);
+
 fn xray_bin() -> Option<PathBuf> {
-    std::env::var_os("XRAY_BIN").map(PathBuf::from)
+    std::env::var_os("XRAY_BIN")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let brew = PathBuf::from("/opt/homebrew/opt/xray/bin/xray");
+            brew.exists().then_some(brew)
+        })
+        .or_else(|| {
+            let path = PathBuf::from("/usr/local/opt/xray/bin/xray");
+            path.exists().then_some(path)
+        })
 }
 
 fn write_test_cert(dir: &TempDir) -> (String, String) {
@@ -33,17 +47,23 @@ fn write_test_cert(dir: &TempDir) -> (String, String) {
     )
 }
 
-async fn spawn_xray(bin: &Path, config_path: &Path) -> Child {
-    let child = Command::new(bin)
+async fn spawn_xray(bin: &Path, config_path: &Path, port: u16) -> Child {
+    let mut child = Command::new(bin)
         .arg("run")
         .arg("-c")
         .arg(config_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    sleep(Duration::from_millis(800)).await;
-    child
+    for _ in 0..50 {
+        if let Some(status) = child.try_wait().unwrap() {
+            panic!("xray exited early with status {status}");
+        }
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return child;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    panic!("timed out waiting for xray to listen on port {port}");
 }
 
 async fn xray_x25519(bin: &Path) -> (String, String) {
@@ -67,6 +87,67 @@ async fn xray_x25519(bin: &Path) -> (String, String) {
 
 fn local_net() -> rd_interface::Net {
     LocalNet::new(LocalNetConfig::default()).into_dyn()
+}
+
+async fn run_rdp_udp_burst(client: rd_interface::Net, target: SocketAddr) {
+    let target = rd_interface::Address::from(target);
+    for client_idx in 0..UDP_STRESS_CLIENTS {
+        let mut udp = client
+            .clone()
+            .udp_bind(&mut Context::new(), &"0.0.0.0:0".into_address().unwrap())
+            .await
+            .unwrap();
+
+        let warmup = format!("rdp-warmup-{client_idx:02}").into_bytes();
+        udp.send_to(&warmup, &target).await.unwrap();
+        let mut warmup_buf = vec![0u8; warmup.len() + 32];
+        let mut warmup_rb = rd_interface::ReadBuf::new(&mut warmup_buf);
+        timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut warmup_rb))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(warmup_rb.filled(), warmup.as_slice());
+
+        for packet_idx in 0..UDP_STRESS_PACKETS {
+            let payload = format!("rdp-{client_idx:02}-{packet_idx:03}").into_bytes();
+            udp.send_to(&payload, &target).await.unwrap();
+            let mut buf = vec![0u8; payload.len() + 32];
+            let mut rb = rd_interface::ReadBuf::new(&mut buf);
+            timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut rb))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(rb.filled(), payload.as_slice());
+            sleep(UDP_STRESS_PACING).await;
+        }
+    }
+}
+
+async fn run_udp_burst_via_xray(client_udp_addr: SocketAddr) {
+    for client_idx in 0..UDP_STRESS_CLIENTS {
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+
+        let warmup = format!("xray-warmup-{client_idx:02}").into_bytes();
+        udp.send_to(&warmup, client_udp_addr).await.unwrap();
+        let mut warmup_buf = [0u8; 128];
+        let (warmup_n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut warmup_buf))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&warmup_buf[..warmup_n], warmup.as_slice());
+
+        for packet_idx in 0..UDP_STRESS_PACKETS {
+            let payload = format!("xray-{client_idx:02}-{packet_idx:03}").into_bytes();
+            udp.send_to(&payload, client_udp_addr).await.unwrap();
+            let mut buf = [0u8; 128];
+            let (n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buf[..n], payload.as_slice());
+            sleep(UDP_STRESS_PACING).await;
+        }
+    }
 }
 
 #[tokio::test]
@@ -144,7 +225,7 @@ async fn test_xray_server_with_rdp_client_tcp_udp() {
     )
     .unwrap();
 
-    let mut child = spawn_xray(&bin, &config_path).await;
+    let mut child = spawn_xray(&bin, &config_path, server_addr.port()).await;
 
     let client = crate::client::VlessNet::new(VlessNetConfig {
         net: NetRef::new_with_value("out".into(), local_net()),
@@ -167,8 +248,9 @@ async fn test_xray_server_with_rdp_client_tcp_udp() {
         .await
         .unwrap();
     tcp.write_all(b"hello").await.unwrap();
+    tcp.flush().await.unwrap();
     let mut buf = [0u8; 5];
-    timeout(Duration::from_secs(5), tcp.read_exact(&mut buf))
+    timeout(XRAY_IO_TIMEOUT, tcp.read_exact(&mut buf))
         .await
         .unwrap()
         .unwrap();
@@ -181,7 +263,7 @@ async fn test_xray_server_with_rdp_client_tcp_udp() {
     udp.send_to(b"ping", &echo_udp_addr.into()).await.unwrap();
     let mut ubuf = vec![0u8; 64];
     let mut rb = rd_interface::ReadBuf::new(&mut ubuf);
-    timeout(Duration::from_secs(5), udp.recv_from(&mut rb))
+    timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut rb))
         .await
         .unwrap()
         .unwrap();
@@ -320,12 +402,12 @@ async fn test_xray_client_with_rdp_server_tcp_udp() {
     )
     .unwrap();
 
-    let mut child = spawn_xray(&bin, &config_path).await;
+    let mut child = spawn_xray(&bin, &config_path, client_tcp_addr.port()).await;
 
     let mut tcp = TcpStream::connect(client_tcp_addr).await.unwrap();
     tcp.write_all(b"hello").await.unwrap();
     let mut buf = [0u8; 5];
-    timeout(Duration::from_secs(5), tcp.read_exact(&mut buf))
+    timeout(XRAY_IO_TIMEOUT, tcp.read_exact(&mut buf))
         .await
         .unwrap()
         .unwrap();
@@ -334,7 +416,7 @@ async fn test_xray_client_with_rdp_server_tcp_udp() {
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     udp.send_to(b"ping", client_udp_addr).await.unwrap();
     let mut ubuf = [0u8; 64];
-    let (n, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut ubuf))
+    let (n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut ubuf))
         .await
         .unwrap()
         .unwrap();
@@ -425,7 +507,7 @@ async fn test_xray_reality_server_with_rdp_client_tcp_udp() {
     )
     .unwrap();
 
-    let mut child = spawn_xray(&bin, &config_path).await;
+    let mut child = spawn_xray(&bin, &config_path, server_addr.port()).await;
 
     let client = crate::client::VlessNet::new(VlessNetConfig {
         net: NetRef::new_with_value("out".into(), local_net()),
@@ -448,8 +530,9 @@ async fn test_xray_reality_server_with_rdp_client_tcp_udp() {
         .await
         .unwrap();
     tcp.write_all(b"hello").await.unwrap();
+    tcp.flush().await.unwrap();
     let mut buf = [0u8; 5];
-    timeout(Duration::from_secs(5), tcp.read_exact(&mut buf))
+    timeout(XRAY_IO_TIMEOUT, tcp.read_exact(&mut buf))
         .await
         .unwrap()
         .unwrap();
@@ -462,11 +545,13 @@ async fn test_xray_reality_server_with_rdp_client_tcp_udp() {
     udp.send_to(b"ping", &echo_udp_addr.into()).await.unwrap();
     let mut ubuf = vec![0u8; 64];
     let mut rb = rd_interface::ReadBuf::new(&mut ubuf);
-    timeout(Duration::from_secs(5), udp.recv_from(&mut rb))
+    timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut rb))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(rb.filled(), b"ping");
+
+    run_rdp_udp_burst(client.clone(), echo_udp_addr).await;
 
     let _ = child.kill().await;
 }
@@ -604,12 +689,12 @@ async fn test_xray_client_with_rdp_reality_server_tcp_udp() {
     )
     .unwrap();
 
-    let mut child = spawn_xray(&bin, &config_path).await;
+    let mut child = spawn_xray(&bin, &config_path, client_tcp_addr.port()).await;
 
     let mut tcp = TcpStream::connect(client_tcp_addr).await.unwrap();
     tcp.write_all(b"hello").await.unwrap();
     let mut buf = [0u8; 5];
-    timeout(Duration::from_secs(5), tcp.read_exact(&mut buf))
+    timeout(XRAY_IO_TIMEOUT, tcp.read_exact(&mut buf))
         .await
         .unwrap()
         .unwrap();
@@ -618,11 +703,13 @@ async fn test_xray_client_with_rdp_reality_server_tcp_udp() {
     let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     udp.send_to(b"ping", client_udp_addr).await.unwrap();
     let mut ubuf = [0u8; 64];
-    let (n, _) = timeout(Duration::from_secs(5), udp.recv_from(&mut ubuf))
+    let (n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut ubuf))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(&ubuf[..n], b"ping");
+
+    run_udp_burst_via_xray(client_udp_addr).await;
 
     let _ = child.kill().await;
     server_task.abort();

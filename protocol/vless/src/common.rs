@@ -84,14 +84,26 @@ pub async fn write_request_header<S>(
 where
     S: AsyncWrite + Unpin,
 {
+    let buf = build_request_header(user_id, flow, command, addr)?;
+    stream.write_all(&buf).await?;
+    stream.flush().await
+}
+
+pub fn build_request_header(
+    user_id: &UserId,
+    flow: &NormalizedFlow,
+    command: u8,
+    addr: &Address,
+) -> io::Result<Vec<u8>> {
     let mut buf = Vec::with_capacity(64);
     buf.push(VLESS_VERSION);
     buf.extend_from_slice(user_id.as_bytes());
     write_addons(&mut buf, flow.as_deref())?;
     buf.push(command);
-    write_address(&mut buf, addr)?;
-    stream.write_all(&buf).await?;
-    stream.flush().await
+    if command != COMMAND_MUX {
+        write_address(&mut buf, addr)?;
+    }
+    Ok(buf)
 }
 
 pub async fn read_request_header<S>(stream: &mut S, expected: &UserId) -> io::Result<RequestHeader>
@@ -119,7 +131,11 @@ where
     let flow = read_addons(stream).await?;
     let mut command = [0u8; 1];
     stream.read_exact(&mut command).await?;
-    let addr = read_address(stream).await?;
+    let addr = if command[0] == COMMAND_MUX {
+        Address::Domain(MUX_DOMAIN.to_string(), MUX_PORT)
+    } else {
+        read_address(stream).await?
+    };
     Ok(RequestHeader {
         command: command[0],
         addr,
@@ -142,6 +158,113 @@ pub struct ResponseHeaderStream<S> {
     skipped: Vec<u8>,
     skipped_read: usize,
     ready: bool,
+}
+
+pub struct PrefixWriteStream<S> {
+    inner: S,
+    pending: BytesMut,
+    pending_payload_len: usize,
+    prefix_sent: bool,
+}
+
+impl<S> PrefixWriteStream<S> {
+    pub fn new(inner: S, prefix: Vec<u8>) -> Self {
+        Self {
+            inner,
+            pending: BytesMut::from(prefix.as_slice()),
+            pending_payload_len: 0,
+            prefix_sent: false,
+        }
+    }
+
+    fn poll_drain_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        while !self.pending.is_empty() {
+            let wrote = match Pin::new(&mut self.inner).poll_write(cx, &self.pending) {
+                Poll::Ready(Ok(n)) => n,
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            };
+            self.pending.advance(wrote);
+            if !self.pending.is_empty() {
+                return Poll::Pending;
+            }
+        }
+        self.prefix_sent = true;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<S> AsyncRead for PrefixWriteStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if !self.pending.is_empty() {
+            match self.poll_drain_pending(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S> AsyncWrite for PrefixWriteStream<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        if !self.prefix_sent {
+            if self.pending_payload_len == 0 && !buf.is_empty() {
+                self.pending.extend_from_slice(buf);
+                self.pending_payload_len = buf.len();
+            }
+            match self.poll_drain_pending(cx) {
+                Poll::Ready(Ok(())) => {
+                    let payload_len = self.pending_payload_len;
+                    self.pending_payload_len = 0;
+                    return Poll::Ready(Ok(payload_len));
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !self.pending.is_empty() {
+            match self.poll_drain_pending(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if !self.pending.is_empty() {
+            match self.poll_drain_pending(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 impl<S> ResponseHeaderStream<S> {
@@ -185,7 +308,6 @@ impl<S> ResponseHeaderStream<S> {
                     format!("unexpected vless response version {}", self.header[0]),
                 )));
             }
-
             if self.skipped.is_empty() {
                 self.skipped.resize(self.header[1] as usize, 0);
                 if self.skipped.is_empty() {
@@ -280,6 +402,10 @@ impl<S> VisionStream<S> {
         user_id: &UserId,
         shared_read_raw: Option<Arc<AtomicBool>>,
     ) -> Self {
+        Self::new(inner, user_id, shared_read_raw)
+    }
+
+    fn new(inner: S, user_id: &UserId, shared_read_raw: Option<Arc<AtomicBool>>) -> Self {
         Self {
             inner,
             user_id: *user_id.as_bytes(),
@@ -322,14 +448,17 @@ impl<S> VisionStream<S> {
             }
 
             if self.expect_uuid {
-                if self.read_buf.len() < 21 {
+                let prefix_len = self.read_buf.len().min(self.user_id.len());
+                if prefix_len > 0 && self.read_buf[..prefix_len] != self.user_id[..prefix_len] {
+                    self.direct_mode = true;
+                    if !self.read_buf.is_empty() {
+                        self.read_pending
+                            .extend_from_slice(&self.read_buf.split().freeze());
+                    }
                     return Ok(());
                 }
-                if self.read_buf[..16] != self.user_id {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid vision frame prefix",
-                    ));
+                if self.read_buf.len() < 21 {
+                    return Ok(());
                 }
                 self.read_buf.advance(16);
                 self.expect_uuid = false;
@@ -516,18 +645,16 @@ where
 }
 
 pub struct XudpCodec {
-    first_packet: bool,
+    last_addr: Option<Address>,
 }
 
 impl XudpCodec {
     pub fn client() -> Self {
-        Self { first_packet: true }
+        Self { last_addr: None }
     }
 
     pub fn server() -> Self {
-        Self {
-            first_packet: false,
-        }
+        Self { last_addr: None }
     }
 }
 
@@ -543,12 +670,15 @@ impl Encoder<(Bytes, Address)> for XudpCodec {
         }
 
         let mut meta = BytesMut::new();
+        let use_compact = self.last_addr.as_ref() == Some(&item.1);
         meta.put_u16(0); // session id
-        meta.put_u8(if self.first_packet { 1 } else { 2 });
+        meta.put_u8(if use_compact { 2 } else { 1 });
         meta.put_u8(1);
-        meta.put_u8(2);
-        write_address_buf(&mut meta, &item.1)?;
-        self.first_packet = false;
+        if !use_compact {
+            meta.put_u8(2);
+            write_address_buf(&mut meta, &item.1)?;
+            self.last_addr = Some(item.1.clone());
+        }
 
         dst.reserve(2 + meta.len() + 2 + item.0.len());
         dst.put_u16(meta.len() as u16);
@@ -587,6 +717,86 @@ mod tests {
         assert_eq!(&buf, b"x");
         assert!(shared.load(Ordering::Relaxed));
     }
+
+    #[tokio::test]
+    async fn test_prefix_write_stream_sends_header_once_before_payload() {
+        let (mut peer, io) = duplex(128);
+        let mut stream = PrefixWriteStream::new(io, b"hdr".to_vec());
+
+        stream.write_all(b"abc").await.unwrap();
+        stream.flush().await.unwrap();
+
+        let mut first = [0u8; 6];
+        peer.read_exact(&mut first).await.unwrap();
+        assert_eq!(&first, b"hdrabc");
+
+        stream.write_all(b"def").await.unwrap();
+        stream.flush().await.unwrap();
+
+        let mut second = [0u8; 3];
+        peer.read_exact(&mut second).await.unwrap();
+        assert_eq!(&second, b"def");
+    }
+
+    #[tokio::test]
+    async fn test_mux_request_header_omits_address_and_round_trips() {
+        let user_id = UserId::parse("27848739-7e61-4ea0-ba56-d8edf2587d12").unwrap();
+        let flow = NormalizedFlow::parse(Some(FLOW_VISION.to_string())).unwrap();
+        let mux_addr = Address::Domain(MUX_DOMAIN.to_string(), MUX_PORT);
+        let header = build_request_header(&user_id, &flow, COMMAND_MUX, &mux_addr).unwrap();
+
+        assert_eq!(header[0], VLESS_VERSION);
+        assert_eq!(header.last().copied(), Some(COMMAND_MUX));
+
+        let (mut writer, mut reader) = duplex(128);
+        writer.write_all(&header).await.unwrap();
+
+        let parsed = read_request_header(&mut reader, &user_id).await.unwrap();
+        assert_eq!(parsed.command, COMMAND_MUX);
+        assert_eq!(parsed.addr, mux_addr);
+        assert_eq!(parsed.flow, flow);
+    }
+
+    #[test]
+    fn test_xudp_codec_encodes_compact_follow_up_packet() {
+        let addr = Address::SocketAddr("127.0.0.1:5353".parse().unwrap());
+        let mut codec = XudpCodec::client();
+
+        let mut first = BytesMut::new();
+        codec
+            .encode((Bytes::from_static(b"one"), addr.clone()), &mut first)
+            .unwrap();
+        assert_eq!(u16::from_be_bytes([first[0], first[1]]), 12);
+        assert_eq!(first[4], 1);
+
+        let mut second = BytesMut::new();
+        codec
+            .encode((Bytes::from_static(b"two"), addr), &mut second)
+            .unwrap();
+        assert_eq!(&second[..6], &[0, 4, 0, 0, 2, 1]);
+    }
+
+    #[test]
+    fn test_xudp_codec_decodes_compact_follow_up_packet() {
+        let addr = Address::SocketAddr("127.0.0.1:5353".parse().unwrap());
+        let mut encoder = XudpCodec::client();
+        let mut buf = BytesMut::new();
+        encoder
+            .encode((Bytes::from_static(b"one"), addr.clone()), &mut buf)
+            .unwrap();
+        encoder
+            .encode((Bytes::from_static(b"two"), addr.clone()), &mut buf)
+            .unwrap();
+
+        let mut decoder = XudpCodec::server();
+        let (first_payload, first_addr) = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(&first_payload[..], b"one");
+        assert_eq!(first_addr, addr);
+
+        let (second_payload, second_addr) = decoder.decode(&mut buf).unwrap().unwrap();
+        assert_eq!(&second_payload[..], b"two");
+        assert_eq!(second_addr, addr);
+    }
 }
 
 impl Decoder for XudpCodec {
@@ -598,7 +808,7 @@ impl Decoder for XudpCodec {
             return Ok(None);
         }
         let meta_len = u16::from_be_bytes([src[0], src[1]]) as usize;
-        if meta_len < 5 {
+        if meta_len < 4 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid xudp metadata length",
@@ -624,16 +834,33 @@ impl Decoder for XudpCodec {
                 format!("unsupported xudp packet type {packet_type}"),
             ));
         }
-        if src[6] != 2 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unsupported xudp network type",
-            ));
-        }
 
         let mut meta = src.split_to(2 + meta_len);
-        meta.advance(2 + 5);
-        let addr = read_address_buf(&mut meta)?;
+        meta.advance(2);
+        let _session_id = meta.get_u16();
+        let packet_type = meta.get_u8();
+        let _option = meta.get_u8();
+        let addr = if meta.is_empty() {
+            self.last_addr.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "xudp compact packet missing prior address",
+                )
+            })?
+        } else {
+            let network = meta.get_u8();
+            if network != 2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unsupported xudp network type",
+                ));
+            }
+            let addr = read_address_buf(&mut meta)?;
+            if packet_type == 1 || packet_type == 2 {
+                self.last_addr = Some(addr.clone());
+            }
+            addr
+        };
         if src.len() < 2 {
             return Ok(None);
         }
