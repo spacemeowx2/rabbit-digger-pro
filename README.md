@@ -44,6 +44,7 @@ All-in-one proxy written in Rust.
 
 Run `bash scripts/vless_xray_reality_e2e.sh` to validate real Xray REALITY interoperability with public HTTP traffic via `curl`. The script uses `XRAY_BIN` if set, otherwise falls back to the Homebrew `xray` install path.
 By default it also runs `16` concurrent proxied fetches and one rate-limited `2 MiB` long-lived transfer in each direction. Tune them with `STRESS_CONCURRENCY`, `LONG_TRANSFER_KIB`, and `LONG_RATE_LIMIT`.
+For a longer soak, for example, run `STRESS_CONCURRENCY=32 LONG_TRANSFER_KIB=8192 LONG_RATE_LIMIT=128k bash scripts/vless_xray_reality_e2e.sh`.
 For GitHub Actions, use the manual workflow [vless-xray-interop.yml](/Users/space/project/rabbit-digger-pro/.github/workflows/vless-xray-interop.yml) on macOS to run the same real-binary checks.
 
 ## crates
