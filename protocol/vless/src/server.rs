@@ -1,9 +1,9 @@
 use std::sync::{atomic::AtomicBool, Arc};
 
 use crate::common::{
-    build_server_config, read_request_header, relay_stream_udp, write_response_header,
-    NormalizedFlow, UserId, VisionStream, COMMAND_MUX, COMMAND_TCP, FLOW_VISION, MUX_DOMAIN,
-    MUX_PORT,
+    build_server_config, ensure_rustls_provider_installed, read_request_header, relay_stream_udp,
+    write_response_header, NormalizedFlow, UserId, VisionStream, COMMAND_MUX, COMMAND_TCP,
+    FLOW_VISION, MUX_DOMAIN, MUX_PORT,
 };
 use crate::reality::{accept_reality_stream, RealityServerConfig};
 use rd_interface::{async_trait, config::NetRef, prelude::*, Address, IServer, Net, Result};
@@ -65,6 +65,8 @@ enum ServerAcceptor {
 
 impl VlessServer {
     pub fn new(config: VlessServerConfig) -> Result<Self> {
+        ensure_rustls_provider_installed();
+
         let acceptor = match config.reality_private_key.clone() {
             Some(private_key) => ServerAcceptor::Reality(Arc::new(RealityServerConfig {
                 server_name: config.reality_server_name.clone().ok_or_else(|| {

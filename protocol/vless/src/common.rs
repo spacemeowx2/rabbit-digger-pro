@@ -14,6 +14,7 @@ use futures::{SinkExt, StreamExt};
 use rd_interface::{error::map_other, Address, AsyncRead, AsyncWrite, ReadBuf, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_rustls::rustls::{
+    crypto::ring::default_provider,
     pki_types::{CertificateDer, PrivateKeyDer},
     ServerConfig,
 };
@@ -30,6 +31,13 @@ const ADDRESS_TYPE_IPV4: u8 = 1;
 const ADDRESS_TYPE_DOMAIN: u8 = 2;
 const ADDRESS_TYPE_IPV6: u8 = 3;
 const MAX_VISION_CONTENT: usize = u16::MAX as usize;
+
+pub fn ensure_rustls_provider_installed() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = default_provider().install_default();
+    });
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NormalizedFlow(Option<String>);

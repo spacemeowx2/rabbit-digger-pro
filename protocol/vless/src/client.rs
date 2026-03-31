@@ -6,9 +6,9 @@ use std::{
 };
 
 use crate::common::{
-    build_request_header, write_request_header, NormalizedFlow, PrefixWriteStream,
-    ResponseHeaderStream, UserId, VisionStream, XudpCodec, COMMAND_MUX, COMMAND_TCP, FLOW_VISION,
-    MUX_DOMAIN, MUX_PORT,
+    build_request_header, ensure_rustls_provider_installed, write_request_header, NormalizedFlow,
+    PrefixWriteStream, ResponseHeaderStream, UserId, VisionStream, XudpCodec, COMMAND_MUX,
+    COMMAND_TCP, FLOW_VISION, MUX_DOMAIN, MUX_PORT,
 };
 use crate::reality::{connect_reality_stream, RealityConfig};
 use bytes::Bytes;
@@ -130,6 +130,8 @@ impl ServerCertVerifier for AllowAnyCert {
 
 impl VlessNet {
     pub fn new(config: VlessNetConfig) -> Result<Self> {
+        ensure_rustls_provider_installed();
+
         let VlessNetConfig {
             net,
             server,
