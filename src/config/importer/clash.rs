@@ -235,6 +235,13 @@ impl Clash {
             "vless" => {
                 #[derive(Debug, Deserialize)]
                 #[serde(rename_all = "kebab-case")]
+                struct RealityOpts {
+                    public_key: String,
+                    short_id: Option<String>,
+                }
+
+                #[derive(Debug, Deserialize)]
+                #[serde(rename_all = "kebab-case")]
                 struct Param {
                     server: String,
                     port: PortValue,
@@ -246,6 +253,8 @@ impl Clash {
                     servername: Option<String>,
                     sni: Option<String>,
                     skip_cert_verify: Option<bool>,
+                    client_fingerprint: Option<String>,
+                    reality_opts: Option<RealityOpts>,
                 }
                 let params: Param = serde_json::from_value(p.opt)?;
                 let port = params.port.into_u16()?;
@@ -264,20 +273,23 @@ impl Clash {
                     .or(params.sni)
                     .unwrap_or_else(|| params.server.clone());
 
-                with_net(
-                    Net::new(
-                        "vless",
-                        json!({
-                            "server": format!("{}:{}", params.server, port),
-                            "id": params.uuid,
-                            "flow": params.flow,
-                            "sni": sni,
-                            "skip_cert_verify": params.skip_cert_verify.unwrap_or_default(),
-                            "udp": params.udp.unwrap_or_default(),
-                        }),
-                    ),
-                    target_net,
-                )
+                let mut opt = json!({
+                    "server": format!("{}:{}", params.server, port),
+                    "id": params.uuid,
+                    "flow": params.flow,
+                    "sni": sni,
+                    "skip_cert_verify": params.skip_cert_verify.unwrap_or_default(),
+                    "udp": params.udp.unwrap_or_default(),
+                });
+                if let Some(client_fingerprint) = params.client_fingerprint {
+                    opt["client_fingerprint"] = json!(client_fingerprint);
+                }
+                if let Some(reality_opts) = params.reality_opts {
+                    opt["reality_public_key"] = json!(reality_opts.public_key);
+                    opt["reality_short_id"] = json!(reality_opts.short_id);
+                }
+
+                with_net(Net::new("vless", opt), target_net)
             }
             "http" => {
                 #[derive(Debug, Deserialize)]
@@ -762,6 +774,7 @@ mod tests {
             vless.opt.get("sni").and_then(|v| v.as_str()),
             Some("www.microsoft.com")
         );
+        assert!(vless.opt.get("reality_public_key").is_none());
 
         let vless_ws: Proxy = serde_json::from_value(serde_json::json!({
             "name": "vw",
@@ -774,6 +787,47 @@ mod tests {
         }))
         .unwrap();
         assert!(c.proxy_to_net(vless_ws, None).is_err());
+
+        let vless_reality: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "vr",
+            "type": "vless",
+            "server": "example.com",
+            "port": 29582,
+            "uuid": "718735b0-4a1a-3663-a190-a84fcd981921",
+            "udp": true,
+            "network": "tcp",
+            "flow": "xtls-rprx-vision",
+            "tls": true,
+            "servername": "www.microsoft.com",
+            "client-fingerprint": "chrome",
+            "reality-opts": {
+                "public-key": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+                "short-id": "00000000"
+            }
+        }))
+        .unwrap();
+        let vless_reality = c.proxy_to_net(vless_reality, None).unwrap();
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("client_fingerprint")
+                .and_then(|v| v.as_str()),
+            Some("chrome")
+        );
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("reality_public_key")
+                .and_then(|v| v.as_str()),
+            Some("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE")
+        );
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("reality_short_id")
+                .and_then(|v| v.as_str()),
+            Some("00000000")
+        );
 
         let http: Proxy = serde_json::from_value(serde_json::json!({
             "name": "h",

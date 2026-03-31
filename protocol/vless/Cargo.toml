@@ -15,6 +15,11 @@ tokio-rustls = "0.26.4"
 rustls-pemfile = "2.2.0"
 uuid = "1.19.0"
 tracing = "0.1.44"
+base64 = "0.22.1"
+webpki-roots = "0.26.11"
+hex = "0.4.3"
+reality = { git = "https://github.com/eycorsican/reality-rs.git" }
+reality-rustls = { package = "rustls", git = "https://github.com/eycorsican/reality-rustls.git", branch = "reality-rebase-0.23.36", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 [dev-dependencies]
 rcgen = "0.13"

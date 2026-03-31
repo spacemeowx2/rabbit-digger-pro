@@ -4,10 +4,11 @@ use crate::common::{
     write_request_header, NormalizedFlow, ResponseHeaderStream, UserId, VisionStream, XudpCodec,
     COMMAND_MUX, COMMAND_TCP, FLOW_VISION, MUX_DOMAIN, MUX_PORT,
 };
+use crate::reality::{connect_reality_stream, RealityConfig};
 use bytes::Bytes;
 use futures::{ready, SinkExt, StreamExt};
 use rd_interface::{
-    async_trait, config::NetRef, prelude::*, registry::Builder, Address, Error, INet, IntoDyn,
+    async_trait, config::NetRef, prelude::*, registry::Builder, Address, Error, INet, IntoDyn, Net,
     Result, TcpConnect, TcpStream, UdpSocket,
 };
 use rd_std::tls::{TlsNet, TlsNetConfig};
@@ -41,6 +42,15 @@ pub struct VlessNetConfig {
     /// enable udp relay
     #[serde(default)]
     pub(crate) udp: bool,
+
+    #[serde(default)]
+    pub(crate) client_fingerprint: Option<String>,
+
+    #[serde(default)]
+    pub(crate) reality_public_key: Option<String>,
+
+    #[serde(default)]
+    pub(crate) reality_short_id: Option<String>,
 }
 
 fn default_flow() -> Option<String> {
@@ -52,27 +62,52 @@ pub struct VlessNet {
     user_id: UserId,
     flow: NormalizedFlow,
     udp: bool,
-    tls: TlsNet,
+    transport: Transport,
+}
+
+enum Transport {
+    Tls(TlsNet),
+    Reality { net: Net, config: RealityConfig },
 }
 
 impl VlessNet {
     pub fn new(config: VlessNetConfig) -> Result<Self> {
-        let tls = TlsNet::build(TlsNetConfig {
-            skip_cert_verify: config.skip_cert_verify,
-            sni: config.sni,
-            net: config.net,
-        })?;
+        let transport = match config.reality_public_key {
+            Some(public_key) => Transport::Reality {
+                net: config.net.value_cloned(),
+                config: RealityConfig {
+                    server_name: config.sni.unwrap_or_else(|| config.server.host()),
+                    public_key,
+                    short_id: config.reality_short_id,
+                    client_fingerprint: config.client_fingerprint,
+                },
+            },
+            None => Transport::Tls(TlsNet::build(TlsNetConfig {
+                skip_cert_verify: config.skip_cert_verify,
+                sni: config.sni,
+                net: config.net,
+            })?),
+        };
         Ok(Self {
             server: config.server,
             user_id: UserId::parse(&config.id)?,
             flow: NormalizedFlow::parse(config.flow)?,
             udp: config.udp,
-            tls,
+            transport,
         })
     }
 
     async fn connect_stream(&self, ctx: &mut rd_interface::Context) -> Result<TcpStream> {
-        self.tls.tcp_connect(ctx, &self.server).await
+        match &self.transport {
+            Transport::Tls(tls) => tls.tcp_connect(ctx, &self.server).await,
+            Transport::Reality { net, config } => {
+                let stream = net.tcp_connect(ctx, &self.server).await?;
+                let reality = connect_reality_stream(stream, config)
+                    .await
+                    .map(TcpStream::from)?;
+                Ok(reality)
+            }
+        }
     }
 }
 
@@ -217,6 +252,9 @@ mod tests {
             sni: Some("localhost".to_string()),
             skip_cert_verify: true,
             udp: true,
+            client_fingerprint: None,
+            reality_public_key: None,
+            reality_short_id: None,
         })
         .unwrap()
         .into_dyn();

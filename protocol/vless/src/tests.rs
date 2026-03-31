@@ -60,6 +60,9 @@ async fn test_vless_server_client() {
         sni: Some("localhost".to_string()),
         skip_cert_verify: true,
         udp: true,
+        client_fingerprint: None,
+        reality_public_key: None,
+        reality_short_id: None,
         net: NetRef::new_with_value(Value::String("local".to_string()), local.clone()),
     };
     let client = client::VlessNet::new(client_cfg).unwrap().into_dyn();

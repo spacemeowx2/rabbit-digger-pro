@@ -6,6 +6,7 @@ mod client;
 mod common;
 #[cfg(test)]
 mod interop_tests;
+mod reality;
 mod server;
 #[cfg(test)]
 mod tests;
