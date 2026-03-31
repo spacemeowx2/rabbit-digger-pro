@@ -1,4 +1,9 @@
-use std::{io, net::SocketAddr, task::Poll};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{atomic::AtomicBool, Arc},
+    task::Poll,
+};
 
 use crate::common::{
     write_request_header, NormalizedFlow, ResponseHeaderStream, UserId, VisionStream, XudpCodec,
@@ -97,12 +102,16 @@ impl VlessNet {
         })
     }
 
-    async fn connect_stream(&self, ctx: &mut rd_interface::Context) -> Result<TcpStream> {
+    async fn connect_stream(
+        &self,
+        ctx: &mut rd_interface::Context,
+        shared_read_raw: Option<Arc<AtomicBool>>,
+    ) -> Result<TcpStream> {
         match &self.transport {
             Transport::Tls(tls) => tls.tcp_connect(ctx, &self.server).await,
             Transport::Reality { net, config } => {
                 let stream = net.tcp_connect(ctx, &self.server).await?;
-                let reality = connect_reality_stream(stream, config)
+                let reality = connect_reality_stream(stream, config, shared_read_raw)
                     .await
                     .map(TcpStream::from)?;
                 Ok(reality)
@@ -118,12 +127,20 @@ impl rd_interface::TcpConnect for VlessNet {
         ctx: &mut rd_interface::Context,
         addr: &Address,
     ) -> Result<TcpStream> {
-        let mut stream = self.connect_stream(ctx).await?;
+        let shared_read_raw = self
+            .flow
+            .is_vision()
+            .then(|| Arc::new(AtomicBool::new(false)));
+        let mut stream = self.connect_stream(ctx, shared_read_raw.clone()).await?;
         write_request_header(&mut stream, &self.user_id, &self.flow, COMMAND_TCP, addr).await?;
         let stream = ResponseHeaderStream::new(stream);
 
         let stream = if self.flow.is_vision() {
-            TcpStream::from(VisionStream::new(stream, &self.user_id))
+            TcpStream::from(VisionStream::new_with_shared(
+                stream,
+                &self.user_id,
+                shared_read_raw,
+            ))
         } else {
             TcpStream::from(stream)
         };
@@ -147,7 +164,10 @@ impl rd_interface::UdpBind for VlessNet {
             ));
         }
 
-        let mut stream = self.connect_stream(ctx).await?;
+        let shared_read_raw = Arc::new(AtomicBool::new(false));
+        let mut stream = self
+            .connect_stream(ctx, Some(shared_read_raw.clone()))
+            .await?;
         write_request_header(
             &mut stream,
             &self.user_id,
@@ -156,7 +176,11 @@ impl rd_interface::UdpBind for VlessNet {
             &Address::Domain(MUX_DOMAIN.to_string(), MUX_PORT),
         )
         .await?;
-        let stream = VisionStream::new(ResponseHeaderStream::new(stream), &self.user_id);
+        let stream = VisionStream::new_with_shared(
+            ResponseHeaderStream::new(stream),
+            &self.user_id,
+            Some(shared_read_raw),
+        );
         let framed = Framed::new(stream, XudpCodec::client());
         Ok(VlessUdp {
             framed,

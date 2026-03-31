@@ -1,7 +1,10 @@
 use std::{
     io::{self, ErrorKind, Read, Write},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
@@ -206,6 +209,8 @@ impl<'a, 'b, S: AsyncWrite> Write for TlsBridge<'a, 'b, S> {
 pub(crate) struct RealityStream<S> {
     conn: ClientConnection,
     stream: S,
+    read_raw: bool,
+    shared_read_raw: Option<Arc<AtomicBool>>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> RealityStream<S> {
@@ -213,11 +218,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> RealityStream<S> {
         config: Arc<ClientConfig>,
         name: ServerName<'static>,
         stream: S,
+        shared_read_raw: Option<Arc<AtomicBool>>,
     ) -> io::Result<Self> {
         let conn = ClientConnection::new(config, name)
             .map_err(map_other)
             .map_err(rd_interface::Error::to_io_err)?;
-        Ok(Self { conn, stream })
+        Ok(Self {
+            conn,
+            stream,
+            read_raw: false,
+            shared_read_raw,
+        })
     }
 
     pub(crate) async fn perform_handshake(&mut self) -> io::Result<()> {
@@ -321,6 +332,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for RealityStream<S> {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
+
+        let mut read_raw = this.read_raw;
+        if !read_raw {
+            if let Some(shared) = &this.shared_read_raw {
+                read_raw = shared.load(Ordering::Relaxed);
+                if read_raw {
+                    this.read_raw = true;
+                }
+            }
+        }
+        if read_raw {
+            return Pin::new(&mut this.stream).poll_read(cx, buf);
+        }
+
         let _ = this.pump_write(cx)?;
 
         loop {
@@ -380,6 +405,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for RealityStream<S> {
 pub(crate) async fn connect_reality_stream<S>(
     stream: S,
     cfg: &RealityConfig,
+    shared_read_raw: Option<Arc<AtomicBool>>,
 ) -> io::Result<RealityStream<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -389,7 +415,7 @@ where
     let server_name = ServerName::try_from(cfg.server_name.clone())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let config = build_rustls_config(cfg)?;
-    let mut reality = RealityStream::new(config, server_name, stream)?;
+    let mut reality = RealityStream::new(config, server_name, stream, shared_read_raw)?;
     reality.perform_handshake().await?;
     Ok(reality)
 }

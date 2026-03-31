@@ -2,6 +2,10 @@ use std::{
     fs, io,
     path::Path,
     pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 
@@ -267,10 +271,19 @@ pub struct VisionStream<S> {
     remaining_content: usize,
     remaining_padding: usize,
     direct_mode: bool,
+    shared_read_raw: Option<Arc<AtomicBool>>,
 }
 
 impl<S> VisionStream<S> {
     pub fn new(inner: S, user_id: &UserId) -> Self {
+        Self::new_with_shared(inner, user_id, None)
+    }
+
+    pub fn new_with_shared(
+        inner: S,
+        user_id: &UserId,
+        shared_read_raw: Option<Arc<AtomicBool>>,
+    ) -> Self {
         Self {
             inner,
             user_id: *user_id.as_bytes(),
@@ -285,6 +298,7 @@ impl<S> VisionStream<S> {
             remaining_content: 0,
             remaining_padding: 0,
             direct_mode: false,
+            shared_read_raw,
         }
     }
     fn enqueue_write(&mut self, buf: &[u8]) -> usize {
@@ -365,6 +379,11 @@ impl<S> VisionStream<S> {
             }
 
             self.direct_mode = true;
+            if self.current_command == 2 {
+                if let Some(shared) = &self.shared_read_raw {
+                    shared.store(true, Ordering::Relaxed);
+                }
+            }
             if !self.read_buf.is_empty() {
                 self.read_pending
                     .extend_from_slice(&self.read_buf.split().freeze());
@@ -541,6 +560,36 @@ impl Encoder<(Bytes, Address)> for XudpCodec {
         dst.put_u16(item.0.len() as u16);
         dst.extend_from_slice(&item.0);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn test_vision_stream_transitions_to_direct_mode_and_updates_shared_flag() {
+        let user_id = UserId::parse("27848739-7e61-4ea0-ba56-d8edf2587d12").unwrap();
+        let shared = Arc::new(AtomicBool::new(false));
+        let (mut peer, io) = duplex(128);
+        let mut stream = VisionStream::new_with_shared(io, &user_id, Some(shared.clone()));
+
+        let mut frame = Vec::new();
+        frame.extend_from_slice(user_id.as_bytes());
+        frame.extend_from_slice(&[2, 0, 0, 0, 0]);
+        frame.extend_from_slice(b"x");
+        peer.write_all(&frame).await.unwrap();
+
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).await.unwrap();
+
+        assert_eq!(&buf, b"x");
+        assert!(shared.load(Ordering::Relaxed));
     }
 }
 
