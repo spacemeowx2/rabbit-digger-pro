@@ -10,7 +10,7 @@ use tokio_smoltcp::{
 
 pub(super) fn get_filter(ip_cidr: &IpCidr) -> Option<String> {
     match ip_cidr {
-        IpCidr::Ipv4(v4) => Some(format!("net {}", v4.network())),
+        IpCidr::Ipv4(v4) => Some(format!("arp or net {}", v4.network())),
         _ => None,
     }
 }
@@ -33,7 +33,30 @@ pub(super) fn get_by_device(
     filter: Option<String>,
     config: &RawNetConfig,
 ) -> Result<impl AsyncDevice> {
+    use std::{
+        ffi::c_void,
+        os::unix::io::{AsRawFd, RawFd},
+    };
+
+    use pcap::Active;
+    use tokio::io::Interest;
     use tokio_smoltcp::device::AsyncCapture;
+
+    #[link(name = "pcap")]
+    unsafe extern "C" {
+        fn pcap_get_selectable_fd(handle: *mut c_void) -> i32;
+    }
+
+    struct SelectableCapture {
+        cap: Capture<Active>,
+        fd: RawFd,
+    }
+
+    impl AsRawFd for SelectableCapture {
+        fn as_raw_fd(&self) -> RawFd {
+            self.fd
+        }
+    }
 
     let mut cap = Capture::from_device(device)
         .context("Failed to capture device")?
@@ -62,11 +85,21 @@ pub(super) fn get_by_device(
     caps.checksum.icmpv4 = Checksum::Tx;
     caps.checksum.icmpv6 = Checksum::Tx;
 
-    AsyncCapture::new(
-        cap.setnonblock().context("Failed to set nonblock")?,
-        |d| d.next().map_err(map_err).map(|p| p.to_vec()),
-        |d, pkt| d.sendpacket(pkt).map_err(map_err),
+    let cap = cap.setnonblock().context("Failed to set nonblock")?;
+    let fd = unsafe { pcap_get_selectable_fd(cap.as_ptr().cast::<c_void>()) };
+    if fd < 0 {
+        return Err(Error::Other(
+            "pcap device does not expose a selectable fd".into(),
+        ));
+    }
+    let cap = SelectableCapture { cap, fd };
+
+    AsyncCapture::new_with_interest(
+        cap,
+        |d| d.cap.next_packet().map_err(map_err).map(|p| p.to_vec()),
+        |d, pkt| d.cap.sendpacket(pkt).map_err(map_err),
         caps,
+        Interest::READABLE,
     )
     .context("Failed to create async capture")
 }
@@ -140,6 +173,6 @@ mod tests {
     fn test_get_filter() {
         let filter = get_filter(&IpCidr::new(Ipv4Address::new(192, 168, 1, 1).into(), 24));
 
-        assert_eq!(filter, Some("net 192.168.1.0/24".to_string()));
+        assert_eq!(filter, Some("arp or net 192.168.1.0/24".to_string()));
     }
 }
