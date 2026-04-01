@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -17,11 +16,6 @@ use tokio::{
 use crate::{client::VlessNetConfig, server::VlessServerConfig};
 
 const XRAY_IO_TIMEOUT: Duration = Duration::from_secs(20);
-// Keep the in-test UDP soak conservative; heavier concurrency lives in
-// scripts/vless_xray_reality_e2e.sh to avoid flaky CI under workspace load.
-const UDP_STRESS_CLIENTS: usize = 2;
-const UDP_STRESS_PACKETS: usize = 8;
-const UDP_STRESS_PACING: Duration = Duration::from_millis(5);
 
 fn xray_bin() -> Option<PathBuf> {
     std::env::var_os("XRAY_BIN")
@@ -89,67 +83,6 @@ async fn xray_x25519(bin: &Path) -> (String, String) {
 
 fn local_net() -> rd_interface::Net {
     LocalNet::new(LocalNetConfig::default()).into_dyn()
-}
-
-async fn run_rdp_udp_burst(client: rd_interface::Net, target: SocketAddr) {
-    let target = rd_interface::Address::from(target);
-    for client_idx in 0..UDP_STRESS_CLIENTS {
-        let mut udp = client
-            .clone()
-            .udp_bind(&mut Context::new(), &"0.0.0.0:0".into_address().unwrap())
-            .await
-            .unwrap();
-
-        let warmup = format!("rdp-warmup-{client_idx:02}").into_bytes();
-        udp.send_to(&warmup, &target).await.unwrap();
-        let mut warmup_buf = vec![0u8; warmup.len() + 32];
-        let mut warmup_rb = rd_interface::ReadBuf::new(&mut warmup_buf);
-        timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut warmup_rb))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(warmup_rb.filled(), warmup.as_slice());
-
-        for packet_idx in 0..UDP_STRESS_PACKETS {
-            let payload = format!("rdp-{client_idx:02}-{packet_idx:03}").into_bytes();
-            udp.send_to(&payload, &target).await.unwrap();
-            let mut buf = vec![0u8; payload.len() + 32];
-            let mut rb = rd_interface::ReadBuf::new(&mut buf);
-            timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut rb))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(rb.filled(), payload.as_slice());
-            sleep(UDP_STRESS_PACING).await;
-        }
-    }
-}
-
-async fn run_udp_burst_via_xray(client_udp_addr: SocketAddr) {
-    for client_idx in 0..UDP_STRESS_CLIENTS {
-        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-
-        let warmup = format!("xray-warmup-{client_idx:02}").into_bytes();
-        udp.send_to(&warmup, client_udp_addr).await.unwrap();
-        let mut warmup_buf = [0u8; 128];
-        let (warmup_n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut warmup_buf))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(&warmup_buf[..warmup_n], warmup.as_slice());
-
-        for packet_idx in 0..UDP_STRESS_PACKETS {
-            let payload = format!("xray-{client_idx:02}-{packet_idx:03}").into_bytes();
-            udp.send_to(&payload, client_udp_addr).await.unwrap();
-            let mut buf = [0u8; 128];
-            let (n, _) = timeout(XRAY_IO_TIMEOUT, udp.recv_from(&mut buf))
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(&buf[..n], payload.as_slice());
-            sleep(UDP_STRESS_PACING).await;
-        }
-    }
 }
 
 #[tokio::test]
@@ -553,8 +486,6 @@ async fn test_xray_reality_server_with_rdp_client_tcp_udp() {
         .unwrap();
     assert_eq!(rb.filled(), b"ping");
 
-    run_rdp_udp_burst(client.clone(), echo_udp_addr).await;
-
     let _ = child.kill().await;
 }
 
@@ -710,8 +641,6 @@ async fn test_xray_client_with_rdp_reality_server_tcp_udp() {
         .unwrap()
         .unwrap();
     assert_eq!(&ubuf[..n], b"ping");
-
-    run_udp_burst_via_xray(client_udp_addr).await;
 
     let _ = child.kill().await;
     server_task.abort();

@@ -33,7 +33,6 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RealityConfig {
-    pub server_name: String,
     pub public_key: String,
     pub short_id: Option<String>,
     pub client_fingerprint: Option<String>,
@@ -490,7 +489,7 @@ fn create_reality_provider() -> Arc<reality_rustls::crypto::CryptoProvider> {
     Arc::new(provider)
 }
 
-fn build_rustls_config(cfg: &RealityConfig) -> io::Result<Arc<ClientConfig>> {
+pub(crate) fn build_rustls_config(cfg: &RealityConfig) -> io::Result<Arc<ClientConfig>> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let verifier = WebPkiServerVerifier::builder(Arc::new(roots))
@@ -1069,9 +1068,17 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let record = read_tls_record(&mut stream).await?;
-    let parsed = parse_reality_client_hello(&record, &cfg.server_name)?;
-    let auth_key = derive_reality_auth_key(cfg, &parsed)?;
-    let config = build_reality_server_config(cfg, &auth_key)?;
+    let config = tokio::task::spawn_blocking({
+        let cfg = cfg.clone();
+        let record = record.clone();
+        move || {
+            let parsed = parse_reality_client_hello(&record, &cfg.server_name)?;
+            let auth_key = derive_reality_auth_key(&cfg, &parsed)?;
+            build_reality_server_config(&cfg, &auth_key)
+        }
+    })
+    .await
+    .map_err(|e| io::Error::other(format!("reality handshake worker failed: {e}")))??;
     let mut reality = RealityServerStream::new(config, stream, shared_read_raw)?;
     reality.perform_handshake(&record).await?;
     Ok(reality)
@@ -1079,17 +1086,15 @@ where
 
 pub(crate) async fn connect_reality_stream<S>(
     stream: S,
-    cfg: &RealityConfig,
+    config: Arc<ClientConfig>,
+    server_name: String,
     shared_read_raw: Option<Arc<AtomicBool>>,
 ) -> io::Result<RealityStream<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    cfg.validate_client_fingerprint()
-        .map_err(rd_interface::Error::to_io_err)?;
-    let server_name = ServerName::try_from(cfg.server_name.clone())
+    let server_name = ServerName::try_from(server_name)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let config = build_rustls_config(cfg)?;
     let mut reality = RealityStream::new(config, server_name, stream, shared_read_raw)?;
     reality.perform_handshake().await?;
     Ok(reality)

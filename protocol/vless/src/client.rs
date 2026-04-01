@@ -10,7 +10,7 @@ use crate::common::{
     PrefixWriteStream, ResponseHeaderStream, UserId, VisionStream, XudpCodec, COMMAND_MUX,
     COMMAND_TCP, FLOW_VISION, MUX_DOMAIN, MUX_PORT,
 };
-use crate::reality::{connect_reality_stream, RealityConfig};
+use crate::reality::{build_rustls_config, connect_reality_stream, RealityConfig};
 use bytes::Bytes;
 use futures::{ready, SinkExt, StreamExt};
 use rd_interface::{
@@ -86,7 +86,8 @@ enum Transport {
     },
     Reality {
         net: Net,
-        config: RealityConfig,
+        server_name: String,
+        config: Arc<reality_rustls::ClientConfig>,
     },
 }
 
@@ -146,15 +147,21 @@ impl VlessNet {
         } = config;
 
         let transport = match reality_public_key {
-            Some(public_key) => Transport::Reality {
-                net: net.value_cloned(),
-                config: RealityConfig {
-                    server_name: sni.unwrap_or_else(|| server.host()),
+            Some(public_key) => {
+                let server_name = sni.unwrap_or_else(|| server.host());
+                let reality_config = RealityConfig {
                     public_key,
                     short_id: reality_short_id,
                     client_fingerprint,
-                },
-            },
+                };
+                reality_config.validate_client_fingerprint()?;
+                let config = build_rustls_config(&reality_config)?;
+                Transport::Reality {
+                    net: net.value_cloned(),
+                    server_name,
+                    config,
+                }
+            }
             None => {
                 let server_name = sni.unwrap_or_else(|| server.host());
                 let mut roots = RootCertStore::empty();
@@ -212,11 +219,20 @@ impl VlessNet {
                     .map_err(rd_interface::error::map_other)?;
                 Ok(TcpStream::from(tls))
             }
-            Transport::Reality { net, config } => {
+            Transport::Reality {
+                net,
+                server_name,
+                config,
+            } => {
                 let stream = net.tcp_connect(ctx, &self.server).await?;
-                let reality = connect_reality_stream(stream, config, shared_read_raw)
-                    .await
-                    .map(TcpStream::from)?;
+                let reality = connect_reality_stream(
+                    stream,
+                    config.clone(),
+                    server_name.clone(),
+                    shared_read_raw,
+                )
+                .await
+                .map(TcpStream::from)?;
                 Ok(reality)
             }
         }
