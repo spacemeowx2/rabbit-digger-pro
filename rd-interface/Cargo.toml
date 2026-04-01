@@ -12,9 +12,9 @@ async-trait = "0.1.42"
 thiserror = "2.0.18"
 serde_json = { version = "1.0", features = ["std", "preserve_order"] }
 serde = { version = "1.0.119", features = ["rc", "derive"] }
-tokio = { version = "1.5", features = ["io-util", "time"] }
+tokio = { version = "1.50.0", features = ["io-util", "time"] }
 rd-derive = { version = "0.1", path = "../rd-derive" }
 schemars = "1.2.0"
 
 [dev-dependencies]
-tokio = { version = "1.17.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["full"] }

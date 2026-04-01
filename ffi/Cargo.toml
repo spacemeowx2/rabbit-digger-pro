@@ -14,9 +14,9 @@ rabbit-digger-pro = { path = "../", default-features = false, features = [
     "obfs",
     "api_server",
 ] }
-tokio = { version = "1.15.0", features = ["full"] }
+tokio = { version = "1.50.0", features = ["full"] }
 tokio-stream = { version = "0.1.6", features = ["net", "sync", "time"] }
-tracing-subscriber = { version = "0.3.7", features = [
+tracing-subscriber = { version = "0.3.23", features = [
     "registry",
     "env-filter",
     "json",

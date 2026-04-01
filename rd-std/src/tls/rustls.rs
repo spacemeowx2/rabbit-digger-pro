@@ -11,7 +11,7 @@ use rd_interface::{error::map_other, AsyncRead, AsyncWrite, Result};
 use tokio::io::ReadBuf;
 use tokio_rustls::rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    crypto::ring::default_provider,
+    crypto::aws_lc_rs::default_provider,
     pki_types::{CertificateDer, ServerName, UnixTime},
     ClientConfig, DigitallySignedStruct, RootCertStore,
 };
