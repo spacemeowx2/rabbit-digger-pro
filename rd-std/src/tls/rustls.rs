@@ -1,34 +1,57 @@
 use std::{
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
-    time::SystemTime,
 };
 
 use super::TlsConnectorConfig;
 use futures::ready;
 use rd_interface::{error::map_other, AsyncRead, AsyncWrite, Result};
-use std::sync::Arc;
 use tokio::io::ReadBuf;
 use tokio_rustls::rustls::{
-    client::{ServerCertVerified, ServerCertVerifier},
-    Certificate, ClientConfig, OwnedTrustAnchor, RootCertStore, ServerName,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    crypto::ring::default_provider,
+    pki_types::{CertificateDer, ServerName, UnixTime},
+    ClientConfig, DigitallySignedStruct, RootCertStore,
 };
 
-pub type TlsStream<T> = PushingStream<tokio_rustls::TlsStream<T>>;
+pub type TlsStream<T> = PushingStream<tokio_rustls::client::TlsStream<T>>;
 
-struct AllowAnyCert;
+#[derive(Debug)]
+struct AllowAnyCert(Arc<dyn ServerCertVerifier>);
 impl ServerCertVerifier for AllowAnyCert {
     fn verify_server_cert(
         &self,
-        _end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: SystemTime,
+        _now: UnixTime,
     ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        self.0.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        self.0.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+        self.0.supported_verify_schemes()
     }
 }
 
@@ -36,28 +59,32 @@ pub struct TlsConnector {
     connector: tokio_rustls::TlsConnector,
 }
 
+fn ensure_rustls_provider_installed() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = default_provider().install_default();
+    });
+}
+
 impl TlsConnector {
     pub(crate) fn new(config: TlsConnectorConfig) -> Result<TlsConnector> {
-        let mut root_cert_store = RootCertStore::empty();
-        root_cert_store.add_server_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.0.iter().map(
-            |ta| {
-                OwnedTrustAnchor::from_subject_spki_name_constraints(
-                    ta.subject,
-                    ta.spki,
-                    ta.name_constraints,
-                )
-            },
-        ));
-        let mut client_config = ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
+        ensure_rustls_provider_installed();
 
-        if config.skip_cert_verify {
-            client_config
+        let mut roots = RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let roots = Arc::new(roots);
+        let builder = ClientConfig::builder();
+        let client_config = if config.skip_cert_verify {
+            let verifier = tokio_rustls::rustls::client::WebPkiServerVerifier::builder(roots)
+                .build()
+                .map_err(map_other)?;
+            builder
                 .dangerous()
-                .set_certificate_verifier(Arc::new(AllowAnyCert));
-        }
+                .with_custom_certificate_verifier(Arc::new(AllowAnyCert(verifier)))
+                .with_no_client_auth()
+        } else {
+            builder.with_root_certificates(roots).with_no_client_auth()
+        };
 
         let connector = tokio_rustls::TlsConnector::from(Arc::new(client_config));
 
@@ -67,10 +94,8 @@ impl TlsConnector {
     where
         IO: AsyncRead + AsyncWrite + Unpin,
     {
-        let stream = self
-            .connector
-            .connect(ServerName::try_from(domain).map_err(map_other)?, stream)
-            .await?;
+        let server_name = ServerName::try_from(domain.to_owned()).map_err(map_other)?;
+        let stream = self.connector.connect(server_name, stream).await?;
         Ok(PushingStream::new(stream.into()))
     }
 }
