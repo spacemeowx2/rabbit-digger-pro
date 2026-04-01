@@ -66,6 +66,7 @@ rpc = { path = "./protocol/rpc", optional = true }
 raw = { path = "./protocol/raw", optional = true }
 obfs = { path = "./protocol/obfs", optional = true }
 hysteria = { path = "./protocol/hysteria", optional = true }
+vless = { path = "./protocol/vless", optional = true }
 
 console-subscriber = { version = "0.5.0", optional = true }
 
@@ -99,6 +100,7 @@ default = [
     "rpc",
     "obfs",
     "hysteria",
+    "vless",
     "api_server",
     "rhai",
     "raw",
@@ -136,6 +138,7 @@ members = [
     "protocol/raw",
     "protocol/obfs",
     "protocol/hysteria",
+    "protocol/vless",
     "ffi",
 ]
 

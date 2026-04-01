@@ -137,7 +137,9 @@ impl Inner {
 mod tests {
     use super::*;
     use futures::StreamExt;
+    use std::io::Write;
     use std::time::Duration;
+    use tempfile::NamedTempFile;
 
     fn minimal_yaml() -> String {
         r#"
@@ -233,5 +235,71 @@ import:
             .await
             .unwrap_err();
         assert!(err.to_string().contains("applying import"));
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_config_applies_clash_path_import_and_select() {
+        let mgr = ConfigManager::new().await.unwrap();
+        let mut clash_file = NamedTempFile::new().unwrap();
+        let clash_content = serde_yaml::to_string(&serde_json::json!({
+            "proxies": [
+                {
+                    "name": "vless-a",
+                    "type": "vless",
+                    "server": "example.com",
+                    "port": 443,
+                    "uuid": "718735b0-4a1a-3663-a190-a84fcd981921",
+                    "udp": true,
+                    "network": "tcp",
+                    "flow": "xtls-rprx-vision",
+                    "tls": true,
+                    "servername": "www.microsoft.com"
+                },
+                {
+                    "name": "trojan-a",
+                    "type": "trojan",
+                    "server": "example.com",
+                    "port": "443",
+                    "password": "secret",
+                    "sni": "www.microsoft.com"
+                }
+            ],
+            "proxy-groups": [],
+            "rules": []
+        }))
+        .unwrap();
+        clash_file.write_all(clash_content.as_bytes()).unwrap();
+
+        let clash_path = clash_file.path().to_string_lossy().replace('\\', "/");
+        let source = ImportSource::Text(format!(
+            r#"
+id: base
+net: {{}}
+server: {{}}
+import:
+  - type: clash
+    source:
+      path: {clash_path}
+    select: imported
+"#
+        ));
+
+        let (cfg, _imports) = mgr
+            .inner
+            .deserialize_config_from_source(&source)
+            .await
+            .unwrap();
+
+        assert_eq!(cfg.net.get("vless-a").unwrap().net_type, "vless");
+        assert_eq!(cfg.net.get("trojan-a").unwrap().net_type, "trojan");
+
+        let imported = cfg.net.get("imported").unwrap();
+        assert_eq!(imported.net_type, "select");
+        let selected = imported.opt.get("selected").and_then(|v| v.as_str());
+        assert_eq!(selected, Some("vless-a"));
+        let list = imported.opt.get("list").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].as_str(), Some("vless-a"));
+        assert_eq!(list[1].as_str(), Some("trojan-a"));
     }
 }

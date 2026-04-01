@@ -83,6 +83,24 @@ struct Proxy {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum PortValue {
+    Number(u16),
+    String(String),
+}
+
+impl PortValue {
+    fn into_u16(self) -> Result<u16> {
+        match self {
+            Self::Number(port) => Ok(port),
+            Self::String(port) => port
+                .parse()
+                .map_err(|e| anyhow!("invalid port {port}: {e}")),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct ProxyGroup {
     name: String,
     #[serde(rename = "type")]
@@ -130,7 +148,7 @@ impl Clash {
                 #[serde(rename_all = "kebab-case")]
                 struct Param {
                     server: String,
-                    port: u16,
+                    port: PortValue,
                     cipher: String,
                     password: String,
                     udp: Option<bool>,
@@ -138,6 +156,7 @@ impl Clash {
                     plugin_opts: Option<HashMap<String, String>>,
                 }
                 let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
 
                 if let (Some(plugin), Some(plugin_opts)) = (params.plugin, params.plugin_opts) {
                     if plugin == "obfs" {
@@ -160,7 +179,7 @@ impl Clash {
                         Net::new(
                             "shadowsocks",
                             json!({
-                                "server": format!("{}:{}", params.server, params.port),
+                                "server": format!("{}:{}", params.server, port),
                                 "cipher": params.cipher,
                                 "password": params.password,
                                 "udp": params.udp.unwrap_or_default(),
@@ -175,7 +194,7 @@ impl Clash {
                         Net::new(
                             "shadowsocks",
                             json!({
-                                "server": format!("{}:{}", params.server, params.port),
+                                "server": format!("{}:{}", params.server, port),
                                 "cipher": params.cipher,
                                 "password": params.password,
                                 "udp": params.udp.unwrap_or_default(),
@@ -187,9 +206,10 @@ impl Clash {
             }
             "trojan" => {
                 #[derive(Debug, Deserialize)]
+                #[serde(rename_all = "kebab-case")]
                 struct Param {
                     server: String,
-                    port: u16,
+                    port: PortValue,
                     password: String,
                     // udp is ignored
                     // udp: Option<bool>,
@@ -198,11 +218,12 @@ impl Clash {
                     skip_cert_verify: Option<bool>,
                 }
                 let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
                 with_net(
                     Net::new(
                         "trojan",
                         json!({
-                            "server": format!("{}:{}", params.server, params.port),
+                            "server": format!("{}:{}", params.server, port),
                             "password": params.password,
                             "sni": params.sni.unwrap_or(params.server),
                             "skip_cert_verify": params.skip_cert_verify.unwrap_or_default(),
@@ -211,18 +232,78 @@ impl Clash {
                     target_net,
                 )
             }
+            "vless" => {
+                #[derive(Debug, Deserialize)]
+                #[serde(rename_all = "kebab-case")]
+                struct RealityOpts {
+                    public_key: String,
+                    short_id: Option<String>,
+                }
+
+                #[derive(Debug, Deserialize)]
+                #[serde(rename_all = "kebab-case")]
+                struct Param {
+                    server: String,
+                    port: PortValue,
+                    uuid: String,
+                    udp: Option<bool>,
+                    network: Option<String>,
+                    flow: Option<String>,
+                    tls: Option<bool>,
+                    servername: Option<String>,
+                    sni: Option<String>,
+                    skip_cert_verify: Option<bool>,
+                    client_fingerprint: Option<String>,
+                    reality_opts: Option<RealityOpts>,
+                }
+                let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
+
+                if let Some(network) = params.network.as_deref() {
+                    if !network.eq_ignore_ascii_case("tcp") {
+                        return Err(anyhow!("unsupported vless network: {network}"));
+                    }
+                }
+                if matches!(params.tls, Some(false)) {
+                    return Err(anyhow!("vless without tls is not supported"));
+                }
+
+                let sni = params
+                    .servername
+                    .or(params.sni)
+                    .unwrap_or_else(|| params.server.clone());
+
+                let mut opt = json!({
+                    "server": format!("{}:{}", params.server, port),
+                    "id": params.uuid,
+                    "flow": params.flow,
+                    "sni": sni,
+                    "skip_cert_verify": params.skip_cert_verify.unwrap_or_default(),
+                    "udp": params.udp.unwrap_or_default(),
+                });
+                if let Some(client_fingerprint) = params.client_fingerprint {
+                    opt["client_fingerprint"] = json!(client_fingerprint);
+                }
+                if let Some(reality_opts) = params.reality_opts {
+                    opt["reality_public_key"] = json!(reality_opts.public_key);
+                    opt["reality_short_id"] = json!(reality_opts.short_id);
+                }
+
+                with_net(Net::new("vless", opt), target_net)
+            }
             "http" => {
                 #[derive(Debug, Deserialize)]
                 struct Param {
                     server: String,
-                    port: u16,
+                    port: PortValue,
                 }
                 let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
                 with_net(
                     Net::new(
                         "http",
                         json!({
-                            "server": format!("{}:{}", params.server, params.port),
+                            "server": format!("{}:{}", params.server, port),
                         }),
                     ),
                     target_net,
@@ -232,14 +313,15 @@ impl Clash {
                 #[derive(Debug, Deserialize)]
                 struct Param {
                     server: String,
-                    port: u16,
+                    port: PortValue,
                 }
                 let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
                 with_net(
                     Net::new(
                         "socks5",
                         json!({
-                            "server": format!("{}:{}", params.server, params.port),
+                            "server": format!("{}:{}", params.server, port),
                         }),
                     ),
                     target_net,
@@ -650,11 +732,102 @@ mod tests {
             "name": "t",
             "type": "trojan",
             "server": "example.com",
-            "port": 443,
+            "port": "443",
             "password": "pw"
         }))
         .unwrap();
-        assert_eq!(c.proxy_to_net(trojan, None).unwrap().net_type, "trojan");
+        let trojan = c.proxy_to_net(trojan, None).unwrap();
+        assert_eq!(trojan.net_type, "trojan");
+        assert_eq!(
+            trojan.opt.get("server").and_then(|v| v.as_str()),
+            Some("example.com:443")
+        );
+
+        let vless: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "v",
+            "type": "vless",
+            "server": "example.com",
+            "port": 443,
+            "uuid": "718735b0-4a1a-3663-a190-a84fcd981921",
+            "udp": true,
+            "network": "tcp",
+            "flow": "xtls-rprx-vision",
+            "tls": true,
+            "servername": "www.microsoft.com"
+        }))
+        .unwrap();
+        let vless = c.proxy_to_net(vless, None).unwrap();
+        assert_eq!(vless.net_type, "vless");
+        assert_eq!(
+            vless.opt.get("server").and_then(|v| v.as_str()),
+            Some("example.com:443")
+        );
+        assert_eq!(
+            vless.opt.get("id").and_then(|v| v.as_str()),
+            Some("718735b0-4a1a-3663-a190-a84fcd981921")
+        );
+        assert_eq!(
+            vless.opt.get("flow").and_then(|v| v.as_str()),
+            Some("xtls-rprx-vision")
+        );
+        assert_eq!(
+            vless.opt.get("sni").and_then(|v| v.as_str()),
+            Some("www.microsoft.com")
+        );
+        assert!(vless.opt.get("reality_public_key").is_none());
+
+        let vless_ws: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "vw",
+            "type": "vless",
+            "server": "example.com",
+            "port": 443,
+            "uuid": "718735b0-4a1a-3663-a190-a84fcd981921",
+            "network": "ws",
+            "tls": true
+        }))
+        .unwrap();
+        assert!(c.proxy_to_net(vless_ws, None).is_err());
+
+        let vless_reality: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "vr",
+            "type": "vless",
+            "server": "example.com",
+            "port": 29582,
+            "uuid": "718735b0-4a1a-3663-a190-a84fcd981921",
+            "udp": true,
+            "network": "tcp",
+            "flow": "xtls-rprx-vision",
+            "tls": true,
+            "servername": "www.microsoft.com",
+            "client-fingerprint": "chrome",
+            "reality-opts": {
+                "public-key": "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE",
+                "short-id": "00000000"
+            }
+        }))
+        .unwrap();
+        let vless_reality = c.proxy_to_net(vless_reality, None).unwrap();
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("client_fingerprint")
+                .and_then(|v| v.as_str()),
+            Some("chrome")
+        );
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("reality_public_key")
+                .and_then(|v| v.as_str()),
+            Some("QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE")
+        );
+        assert_eq!(
+            vless_reality
+                .opt
+                .get("reality_short_id")
+                .and_then(|v| v.as_str()),
+            Some("00000000")
+        );
 
         let http: Proxy = serde_json::from_value(serde_json::json!({
             "name": "h",
