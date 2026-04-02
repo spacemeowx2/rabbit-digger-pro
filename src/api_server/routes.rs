@@ -17,7 +17,7 @@ use rd_interface::Arc;
 use serde::Deserialize;
 use tower_http::{
     cors::{Any, CorsLayer},
-    services::ServeDir,
+    services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
@@ -41,7 +41,12 @@ impl ApiServer {
             .layer(TraceLayer::new_for_http());
 
         if let Some(webui) = &self.web_ui {
-            router = router.fallback(get_service(ServeDir::new(webui)))
+            let spa_index = std::path::Path::new(webui).join("index.html");
+            router = router.fallback_service(get_service(
+                ServeDir::new(webui)
+                    .append_index_html_on_directories(true)
+                    .fallback(ServeFile::new(spa_index)),
+            ))
         }
 
         Ok(router)

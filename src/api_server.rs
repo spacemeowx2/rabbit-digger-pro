@@ -177,6 +177,14 @@ mod tests {
             .unwrap();
         assert!(r.status().is_success());
         assert!(r.text().await.unwrap().contains("ok"));
+
+        let r = client
+            .get(format!("{base}/connections"))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+        assert!(r.text().await.unwrap().contains("ok"));
     }
 
     #[tokio::test]

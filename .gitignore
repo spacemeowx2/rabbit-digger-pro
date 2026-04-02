@@ -9,3 +9,4 @@ node_modules/
 docs/node_modules/
 docs/build/
 docs/static/schema/rabbit-digger-pro-schema.json
+.gstack/

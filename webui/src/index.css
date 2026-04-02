@@ -1,0 +1,211 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'IBM Plex Sans', sans-serif;
+  --font-display: 'Manrope', 'IBM Plex Sans', sans-serif;
+}
+
+:root {
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --app-ink: oklch(0.24 0.02 252);
+  --app-bg: oklch(0.98 0.011 236);
+  --app-bg-strong: oklch(0.95 0.022 224);
+  --panel: color-mix(in oklab, white 84%, var(--app-bg-strong));
+  --panel-muted: color-mix(in oklab, white 62%, var(--app-bg-strong));
+  --line: color-mix(in oklab, white 22%, oklch(0.69 0.03 242));
+  --shadow-panel:
+    0 28px 80px -46px rgba(15, 23, 42, 0.33),
+    0 18px 42px -34px rgba(148, 163, 184, 0.58);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  color: var(--app-ink);
+  background:
+    radial-gradient(circle at top left, rgba(186, 230, 253, 0.68), transparent 34%),
+    radial-gradient(circle at top right, rgba(226, 232, 240, 0.92), transparent 22%),
+    linear-gradient(180deg, oklch(0.985 0.008 240), oklch(0.962 0.014 236));
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.45;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+  background-size: 96px 96px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 88%);
+}
+
+#root {
+  min-height: 100svh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  background: rgba(14, 165, 233, 0.22);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: rgba(148, 163, 184, 0.52);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.surface {
+  background: var(--panel);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-panel), var(--shadow-inset);
+  backdrop-filter: blur(18px);
+}
+
+.surface-muted {
+  background: var(--panel-muted);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow-panel), var(--shadow-inset);
+  backdrop-filter: blur(18px);
+}
+
+.field {
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.82);
+  color: rgb(30 41 59);
+  padding: 0.875rem 1rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
+}
+
+.field:focus {
+  outline: none;
+  border-color: rgba(14, 165, 233, 0.58);
+  box-shadow:
+    0 0 0 4px rgba(14, 165, 233, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94);
+}
+
+.action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.85);
+  padding: 0.8rem 1rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgb(51 65 85);
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease;
+}
+
+.action-button:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 1);
+}
+
+.action-button-danger {
+  border-color: rgba(251, 113, 133, 0.28);
+  color: rgb(190 24 93);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.status-dot {
+  height: 0.58rem;
+  width: 0.58rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.68);
+}
+
+.eyebrow {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgb(100 116 139);
+}
+
+.metric-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+  border-radius: 20px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(255, 255, 255, 0.72);
+  padding: 1rem;
+}
+
+.metric-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgb(100 116 139);
+}
+
+.metric-value {
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 2.3vw, 1.8rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  color: rgb(15 23 42);
+}

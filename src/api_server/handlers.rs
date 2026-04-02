@@ -306,6 +306,12 @@ pub enum MaybePatch {
     Patch(json_patch::Patch),
 }
 
+fn is_benign_websocket_disconnect(message: &str) -> bool {
+    message.contains("Broken pipe")
+        || message.contains("Connection reset by peer")
+        || message.contains("Connection closed")
+}
+
 pub(super) async fn ws_conn(
     ws: WebSocketUpgrade,
     rd: RabbitDigger,
@@ -345,7 +351,10 @@ pub(super) async fn ws_conn(
         .map_ok(|p| Message::Text(serde_json::to_string(&p).unwrap().into()));
     Ok(ws.on_upgrade(move |ws| async move {
         if let Err(e) = forward(stream, ws).await {
-            tracing::error!("WebSocket event error: {:?}", e)
+            let message = e.to_string();
+            if !is_benign_websocket_disconnect(&message) {
+                tracing::error!("WebSocket event error: {:?}", e)
+            }
         }
     }))
 }
@@ -360,7 +369,10 @@ pub(super) async fn ws_log(ws: WebSocketUpgrade) -> Result<impl IntoResponse, Ap
                 ))
                 .await
             {
-                tracing::error!("WebSocket event error: {:?}", e);
+                let message = e.to_string();
+                if !is_benign_websocket_disconnect(&message) {
+                    tracing::error!("WebSocket event error: {:?}", e);
+                }
                 break;
             }
         }

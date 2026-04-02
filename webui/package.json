@@ -1,0 +1,39 @@
+{
+  "name": "webui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "dev:api": "cargo run --manifest-path ../Cargo.toml -- --config ../generated/webui-dev.yaml --bind 127.0.0.1:9091",
+    "build": "tsc -b && vp build",
+    "check": "pnpm lint && pnpm build",
+    "lint": "eslint .",
+    "preview": "vp preview",
+    "serve:dist": "pnpm build && cargo run --manifest-path ../Cargo.toml -- --config ../generated/webui-dev.yaml --bind 127.0.0.1:9091 --web-ui dist"
+  },
+  "dependencies": {
+    "fast-json-patch": "^3.1.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "^24.12.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.4.0",
+    "tailwindcss": "^4.2.2",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.57.0",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "packageManager": "pnpm@10.33.0"
+}
