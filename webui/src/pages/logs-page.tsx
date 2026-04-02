@@ -1,20 +1,27 @@
 import { useDeferredValue, useMemo, useState } from 'react'
 
 import type { LogEntry } from '../types'
-import { classNames } from '../utils'
+import { classNames, extractLogContext } from '../utils'
 
 interface LogsPageProps {
   logs: LogEntry[]
   onClearLogs: () => void
 }
 
-const LEVEL_STYLES: Record<string, string> = {
-  ERROR: 'text-rose-600',
-  WARN: 'text-amber-600',
-  INFO: 'text-sky-600',
-  DEBUG: 'text-slate-500',
-  TRACE: 'text-violet-600',
-  LOG: 'text-slate-500',
+const LEVEL_COLORS: Record<string, string> = {
+  ERROR: 'bg-rose-100 text-rose-700',
+  WARN: 'bg-amber-100 text-amber-700',
+  INFO: 'bg-sky-100 text-sky-700',
+  DEBUG: 'bg-slate-100 text-slate-500',
+  TRACE: 'bg-violet-100 text-violet-600',
+  LOG: 'bg-slate-100 text-slate-500',
+}
+
+function formatTime(time: string | null): string {
+  if (!time) return ''
+  // Extract HH:MM:SS from ISO timestamp
+  const match = time.match(/T(\d{2}:\d{2}:\d{2})/)
+  return match ? match[1] : time
 }
 
 export function LogsPage({ logs, onClearLogs }: LogsPageProps) {
@@ -34,131 +41,152 @@ export function LogsPage({ logs, onClearLogs }: LogsPageProps) {
     return [...visibleLogs]
       .reverse()
       .filter((entry) => {
-        if (level !== 'ALL' && entry.level !== level) {
-          return false
-        }
-
-        if (!deferredQuery) {
-          return true
-        }
-
-        return `${entry.time ?? ''} ${entry.level} ${entry.message}`
+        if (level !== 'ALL' && entry.level !== level) return false
+        if (!deferredQuery) return true
+        return `${entry.time ?? ''} ${entry.level} ${entry.target ?? ''} ${entry.message}`
           .toLowerCase()
           .includes(deferredQuery)
       })
   }, [deferredQuery, level, visibleLogs])
 
   return (
-    <div className="space-y-5">
-      <section className="surface p-5 md:p-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div className="space-y-2">
-            <p className="eyebrow">Logs</p>
-            <h1 className="font-display text-3xl font-semibold tracking-[-0.04em] text-slate-900 md:text-4xl">
-              日志
-            </h1>
-            <p className="max-w-3xl text-sm leading-6 text-slate-600 md:text-base">
-              WebSocket 直接订阅后端日志流。这里保留原始文本，方便观察 selector 切换、
-              连接建立失败和真实路由命中情况。
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              className={classNames(
-                'action-button min-w-28 justify-center',
-                paused && 'border-slate-900 bg-slate-900 text-white',
-              )}
-              onClick={() => {
-                if (!paused) {
-                  setFrozenLogs(logs)
-                  setPaused(true)
-                  return
-                }
-
-                setPaused(false)
-              }}
-            >
-              {paused ? '继续流式' : '暂停流式'}
-            </button>
-            <button
-              type="button"
-              className="action-button action-button-danger"
-              onClick={onClearLogs}
-            >
-              清空视图
-            </button>
-          </div>
+    <div className="space-y-3">
+      {/* toolbar */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <h1 className="font-display text-lg font-semibold text-slate-900">日志</h1>
+          <span className="text-xs text-slate-400">{filteredLogs.length} 条</span>
         </div>
-
-        <div className="mt-5 grid gap-3 lg:grid-cols-[14rem_minmax(0,1fr)_auto]">
-          <label className="field inline-flex items-center gap-3">
-            <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-              level
-            </span>
-            <select
-              className="w-full bg-transparent text-sm font-medium text-slate-700 outline-none"
-              value={level}
-              onChange={(event) => setLevel(event.target.value)}
-              aria-label="选择日志级别"
-            >
-              {levels.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </label>
-
+        <div className="flex items-center gap-2">
+          <select
+            className="field w-24 text-xs"
+            value={level}
+            onChange={(e) => setLevel(e.target.value)}
+          >
+            {levels.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
           <input
-            className="field"
-            placeholder="搜索关键字、span 或错误信息"
+            className="field sm:w-56"
+            placeholder="过滤..."
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            aria-label="过滤日志"
+            onChange={(e) => setQuery(e.target.value)}
           />
-
-          <div className="metric-panel min-w-40">
-            <span className="metric-label">显示条数</span>
-            <strong className="metric-value">{filteredLogs.length}</strong>
-          </div>
+          <button
+            type="button"
+            className={classNames(
+              'action-button text-xs',
+              paused && 'bg-slate-900 text-white border-slate-900',
+            )}
+            onClick={() => {
+              if (!paused) {
+                setFrozenLogs(logs)
+                setPaused(true)
+              } else {
+                setPaused(false)
+              }
+            }}
+          >
+            {paused ? '继续' : '暂停'}
+          </button>
+          <button
+            type="button"
+            className="action-button action-button-danger text-xs"
+            onClick={onClearLogs}
+          >
+            清空
+          </button>
         </div>
-      </section>
+      </div>
 
+      {/* log entries */}
       <section className="surface overflow-hidden">
         {filteredLogs.length === 0 ? (
-          <div className="px-6 py-16 text-center">
-            <p className="font-display text-2xl font-semibold tracking-[-0.04em] text-slate-900">
-              还没有新的日志
-            </p>
-            <p className="mt-3 text-sm leading-6 text-slate-500">
-              当 mixed server 收到流量，或 selector / 连接状态发生变化时，这里会立刻出现输出。
-            </p>
+          <div className="px-4 py-12 text-center text-sm text-slate-500">
+            还没有新的日志
           </div>
         ) : (
-          <div className="max-h-[72vh] overflow-auto">
-            {filteredLogs.map((entry) => (
-              <div
-                key={entry.id}
-                className="border-b border-slate-200/70 px-5 py-3 font-mono text-[13px] leading-6 text-slate-600"
-              >
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  {entry.time && <span className="text-slate-400">{entry.time}</span>}
-                  <span
-                    className={classNames(
-                      'font-sans text-xs font-semibold uppercase tracking-[0.16em]',
-                      LEVEL_STYLES[entry.level] ?? LEVEL_STYLES.LOG,
+          <div className="max-h-[80vh] overflow-auto divide-y divide-slate-200/40">
+            {filteredLogs.map((entry) => {
+              const ctx = extractLogContext(entry)
+              const hasContext = ctx.dest || ctx.netList
+
+              return (
+                <div
+                  key={entry.id}
+                  className="px-4 py-2 hover:bg-white/40 transition text-sm"
+                >
+                  <div className="flex items-start gap-2">
+                    {/* time */}
+                    <span className="shrink-0 w-16 text-xs font-mono text-slate-400">
+                      {formatTime(entry.time)}
+                    </span>
+
+                    {/* level badge */}
+                    <span
+                      className={classNames(
+                        'shrink-0 w-12 text-center rounded px-1.5 py-0.5 text-[10px] font-bold uppercase',
+                        LEVEL_COLORS[entry.level] ?? LEVEL_COLORS.LOG,
+                      )}
+                    >
+                      {entry.level}
+                    </span>
+
+                    {/* target */}
+                    {entry.target && (
+                      <span className="shrink-0 text-xs text-slate-400 font-mono truncate max-w-40">
+                        {entry.target}
+                      </span>
                     )}
-                  >
-                    {entry.level}
-                  </span>
+
+                    {/* message */}
+                    <span className="min-w-0 text-slate-700 break-words">
+                      {entry.message}
+                    </span>
+                  </div>
+
+                  {/* structured context for connection logs */}
+                  {hasContext && (
+                    <div className="mt-1 ml-[7.5rem] flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      {ctx.dest && (
+                        <span className="text-slate-600">
+                          <span className="text-slate-400">dest:</span> {ctx.dest}
+                        </span>
+                      )}
+                      {ctx.src && (
+                        <span className="text-slate-600">
+                          <span className="text-slate-400">src:</span> {ctx.src}
+                        </span>
+                      )}
+                      {ctx.netList && ctx.netList.length > 0 && (
+                        <span className="text-slate-600">
+                          <span className="text-slate-400">route:</span>{' '}
+                          {ctx.netList.join(' → ')}
+                        </span>
+                      )}
+                      {ctx.process && (
+                        <span className="text-slate-600">
+                          <span className="text-slate-400">proc:</span> {ctx.process}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* extra fields */}
+                  {Object.keys(ctx.extraFields).length > 0 && (
+                    <div className="mt-1 ml-[7.5rem] flex flex-wrap gap-x-3 gap-y-1 text-xs">
+                      {Object.entries(ctx.extraFields).map(([key, value]) => (
+                        <span key={key} className="text-slate-500">
+                          <span className="text-slate-400">{key}:</span>{' '}
+                          {typeof value === 'string' ? value : JSON.stringify(value)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <pre className="mt-2 whitespace-pre-wrap break-words text-slate-700">
-                  {entry.message}
-                </pre>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </section>

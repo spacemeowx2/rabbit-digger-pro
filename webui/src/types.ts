@@ -36,6 +36,10 @@ export interface LogEntry {
   level: string
   message: string
   raw: string
+  target: string | null
+  fields: Record<string, unknown> | null
+  span: Record<string, unknown> | null
+  spans: Array<Record<string, unknown>> | null
 }
 
 export interface TrafficSample {

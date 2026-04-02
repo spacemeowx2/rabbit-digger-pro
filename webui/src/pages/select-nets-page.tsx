@@ -2,7 +2,7 @@ import { useDeferredValue, useMemo, useState } from 'react'
 
 import { rdpApi } from '../api'
 import type { RdpConfig } from '../types'
-import { classNames, describeNet, getSelectGroups } from '../utils'
+import { classNames, getSelectGroups } from '../utils'
 
 const DELAY_TEST_URL = 'http://www.gstatic.com/generate_204'
 const DELAY_TIMEOUT_MS = 5000
@@ -20,55 +20,32 @@ interface SelectNetsPageProps {
 }
 
 function getDelayLabel(state?: DelayState): string | null {
-  if (!state) {
-    return null
-  }
-
+  if (!state) return null
   switch (state.status) {
     case 'testing':
-      return 'Testing...'
+      return '...'
     case 'done':
-      return `${state.response} ms`
+      return `${state.response}ms`
     case 'timeout':
       return 'Timeout'
     case 'error':
-      return 'Failed'
+      return 'Err'
   }
 }
 
-function getDelayTone(state: DelayState | undefined, isSelected: boolean): string {
-  if (isSelected) {
-    return 'bg-white/12 text-white'
-  }
-
-  if (!state) {
-    return 'bg-slate-100 text-slate-400'
-  }
-
+function getDelayColor(state?: DelayState): string {
+  if (!state) return 'text-slate-400'
   switch (state.status) {
     case 'testing':
-      return 'bg-slate-900 text-white'
+      return 'text-slate-500'
     case 'done':
-      if (state.response <= 200) {
-        return 'bg-emerald-50 text-emerald-700'
-      }
-      if (state.response <= 500) {
-        return 'bg-amber-50 text-amber-700'
-      }
-      return 'bg-rose-50 text-rose-700'
+      if (state.response <= 200) return 'text-emerald-600'
+      if (state.response <= 500) return 'text-amber-600'
+      return 'text-rose-600'
     case 'timeout':
     case 'error':
-      return 'bg-rose-50 text-rose-700'
+      return 'text-rose-500'
   }
-}
-
-function getBestDelay(options: string[], delayResults: Record<string, DelayState>): number | null {
-  const latencies = options.flatMap((optionName) => {
-    const result = delayResults[optionName]
-    return result?.status === 'done' ? [result.response] : []
-  })
-
-  return latencies.length > 0 ? Math.min(...latencies) : null
 }
 
 export function SelectNetsPage({
@@ -84,18 +61,14 @@ export function SelectNetsPage({
 
   const groups = useMemo(() => {
     const allGroups = getSelectGroups(config)
-    if (!deferredQuery) {
-      return allGroups
-    }
+    if (!deferredQuery) return allGroups
 
     return allGroups
       .map(([groupName, net]) => {
         const list = net.list ?? []
-        const nextList = list.filter((option) => {
-          const candidate = `${groupName} ${option} ${describeNet(option, config?.net[option])}`
-          return candidate.toLowerCase().includes(deferredQuery)
-        })
-
+        const nextList = list.filter((option) =>
+          `${groupName} ${option}`.toLowerCase().includes(deferredQuery),
+        )
         return [groupName, { ...net, list: nextList }] as const
       })
       .filter(([, net]) => (net.list?.length ?? 0) > 0)
@@ -105,202 +78,126 @@ export function SelectNetsPage({
     return [...new Set(groups.flatMap(([, net]) => net.list ?? []))]
   }, [groups])
 
-  const allExpanded =
-    !deferredQuery &&
-    groups.length > 0 &&
-    groups.every(([groupName], index) => expandedGroups[groupName] ?? index === 0)
-
   async function runDelayTest(targets: string[], scope: string) {
-    if (activeDelayScope) {
-      return
-    }
-
+    if (activeDelayScope) return
     const uniqueTargets = [...new Set(targets)]
-    if (uniqueTargets.length === 0) {
-      return
-    }
+    if (uniqueTargets.length === 0) return
 
     setActiveDelayScope(scope)
     setDelayResults((current) => {
       const next = { ...current }
-      uniqueTargets.forEach((target) => {
-        next[target] = { status: 'testing' }
-      })
+      uniqueTargets.forEach((t) => { next[t] = { status: 'testing' } })
       return next
     })
 
     try {
       const queue = [...uniqueTargets]
       const workerCount = Math.min(6, queue.length)
-
       await Promise.all(
         Array.from({ length: workerCount }, async () => {
           while (queue.length > 0) {
             const target = queue.shift()
-            if (!target) {
-              return
-            }
-
+            if (!target) return
             try {
               const result = await rdpApi.getNetDelay(target, DELAY_TEST_URL, DELAY_TIMEOUT_MS)
-              setDelayResults((current) => ({
-                ...current,
+              setDelayResults((c) => ({
+                ...c,
                 [target]: result
-                  ? {
-                      status: 'done',
-                      response: result.response,
-                      testedAt: Date.now(),
-                    }
-                  : {
-                      status: 'timeout',
-                      testedAt: Date.now(),
-                    },
+                  ? { status: 'done', response: result.response, testedAt: Date.now() }
+                  : { status: 'timeout', testedAt: Date.now() },
               }))
             } catch {
-              setDelayResults((current) => ({
-                ...current,
-                [target]: {
-                  status: 'error',
-                  testedAt: Date.now(),
-                },
+              setDelayResults((c) => ({
+                ...c,
+                [target]: { status: 'error', testedAt: Date.now() },
               }))
             }
           }
         }),
       )
     } finally {
-      setActiveDelayScope((current) => (current === scope ? null : current))
+      setActiveDelayScope((c) => (c === scope ? null : c))
     }
   }
 
   return (
-    <div className="space-y-5">
-      <section className="surface p-5 md:p-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div className="space-y-2">
-            <p className="eyebrow">Select Net</p>
-            <h1 className="font-display text-3xl font-semibold tracking-[-0.04em] text-slate-900 md:text-4xl">
-              代理组
-            </h1>
-            <p className="max-w-3xl text-sm leading-6 text-slate-600 md:text-base">
-              查看 selector net，并直接切换当前出口。
-            </p>
-          </div>
-
-          <div className="flex w-full max-w-2xl flex-col gap-3">
-            <label className="sr-only" htmlFor="select-net-search">
-              搜索策略组
-            </label>
-            <input
-              id="select-net-search"
-              className="field"
-              placeholder="搜索代理组、节点名称或目标地址"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="action-button shrink-0"
-                onClick={() => void runDelayTest(visibleOptions, 'all')}
-                disabled={Boolean(activeDelayScope)}
-              >
-                {activeDelayScope === 'all' ? '测试中...' : '测试全部延迟'}
-              </button>
-              {!deferredQuery && groups.length > 1 && (
-                <button
-                  type="button"
-                  className="action-button shrink-0"
-                  onClick={() => {
-                    setExpandedGroups(
-                      Object.fromEntries(
-                        groups.map(([groupName]) => [groupName, !allExpanded]),
-                      ),
-                    )
-                  }}
-                >
-                  {allExpanded ? '收起全部' : '展开全部'}
-                </button>
-              )}
-            </div>
-          </div>
+    <div className="space-y-3">
+      {/* toolbar */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <h1 className="font-display text-lg font-semibold text-slate-900">代理组</h1>
+        <div className="flex items-center gap-2">
+          <input
+            className="field sm:w-64"
+            placeholder="搜索节点..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <button
+            type="button"
+            className="action-button shrink-0"
+            onClick={() => void runDelayTest(visibleOptions, 'all')}
+            disabled={Boolean(activeDelayScope)}
+          >
+            {activeDelayScope === 'all' ? '测试中...' : '测速全部'}
+          </button>
         </div>
-      </section>
+      </div>
 
+      {/* groups */}
       {groups.map(([groupName, net], index) => {
         const selected = net.selected
         const options = net.list ?? []
         const isExpanded = deferredQuery ? true : expandedGroups[groupName] ?? index === 0
-        const bestDelay = getBestDelay(options, delayResults)
-        const preview = options.slice(0, 3).join(' · ')
 
         return (
-          <section key={groupName} className="surface p-5 md:p-6">
-            <div
-              className={classNames(
-                'flex flex-col gap-4',
-                isExpanded && 'border-b border-slate-200/70 pb-5',
-              )}
+          <section key={groupName} className="surface overflow-hidden">
+            {/* group header */}
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-white/40 transition"
+              onClick={() =>
+                setExpandedGroups((c) => ({ ...c, [groupName]: !isExpanded }))
+              }
             >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 space-y-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-display text-2xl font-semibold tracking-[-0.04em] text-slate-900">
-                      {groupName}
-                    </h2>
-                    <span className="tag text-slate-500">selector</span>
-                    <span className="tag text-slate-500">{options.length} options</span>
-                    {bestDelay !== null && (
-                      <span className="tag bg-emerald-50 text-emerald-700">
-                        fastest {bestDelay} ms
-                      </span>
-                    )}
-                  </div>
+              <h2 className="font-display text-sm font-semibold text-slate-900 truncate">
+                {groupName}
+              </h2>
+              <span className="tag bg-sky-50 text-sky-600">Selector</span>
+              <span className="text-xs text-slate-500 truncate">
+                {selected ?? '未选择'}
+              </span>
+              <span className="ml-auto text-xs font-medium text-slate-400">{options.length}</span>
+              <svg
+                className={classNames(
+                  'h-4 w-4 text-slate-400 transition-transform',
+                  isExpanded && 'rotate-180',
+                )}
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
 
-                  <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-slate-600">
-                    <span>当前出口</span>
-                    <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
-                      {selected ?? '未选择'}
-                    </span>
-                    {!isExpanded && preview && (
-                      <span className="text-slate-400">
-                        候选: {preview}
-                        {options.length > 3 ? ` 等 ${options.length} 项` : ''}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
+            {isExpanded && (
+              <div className="border-t border-slate-200/60 px-4 py-3">
+                <div className="flex items-center gap-2 mb-3">
                   <button
                     type="button"
-                    className="action-button shrink-0"
+                    className="action-button text-xs"
                     onClick={() => void runDelayTest(options, groupName)}
                     disabled={Boolean(activeDelayScope)}
                   >
-                    {activeDelayScope === groupName ? '测试中...' : '测试本组'}
-                  </button>
-                  <button
-                    type="button"
-                    className="action-button shrink-0"
-                    onClick={() => {
-                      setExpandedGroups((current) => ({
-                        ...current,
-                        [groupName]: !isExpanded,
-                      }))
-                    }}
-                    aria-expanded={isExpanded}
-                  >
-                    {isExpanded ? '收起' : '展开'}
+                    {activeDelayScope === groupName ? '测试中...' : '测速本组'}
                   </button>
                 </div>
-              </div>
 
-              {isExpanded && (
-                <div className="mt-1 grid gap-3 md:grid-cols-2 2xl:grid-cols-3">
+                <div className="grid gap-2 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
                   {options.map((optionName) => {
-                    const optionNet = config?.net[optionName]
                     const isSelected = selected === optionName
                     const isBusy = busyNet === groupName
                     const delayState = delayResults[optionName]
@@ -311,81 +208,42 @@ export function SelectNetsPage({
                         key={optionName}
                         type="button"
                         className={classNames(
-                          'group rounded-[24px] border p-4 text-left transition duration-200',
+                          'rounded-lg border px-3 py-2 text-left transition duration-150',
                           isSelected
-                            ? 'border-sky-400/70 bg-sky-600 text-white shadow-[0_24px_60px_-36px_rgba(14,116,144,0.65)]'
-                            : 'border-slate-200 bg-white/75 hover:-translate-y-0.5 hover:border-slate-300 hover:bg-white',
-                          isBusy && 'cursor-wait opacity-70',
+                            ? 'border-sky-400 bg-sky-600 text-white shadow-sm'
+                            : 'border-slate-200 bg-white/60 hover:bg-white hover:border-slate-300',
+                          isBusy && 'cursor-wait opacity-60',
                         )}
                         onClick={() => void onSelect(groupName, optionName)}
                         disabled={isBusy}
-                        aria-label={`切换 ${groupName} 到 ${optionName}`}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-base font-semibold">{optionName}</p>
-                            <p
-                              className={classNames(
-                                'mt-2 text-sm leading-5',
-                                isSelected ? 'text-sky-100' : 'text-slate-500',
-                              )}
-                            >
-                              {describeNet(optionName, optionNet)}
-                            </p>
-                          </div>
+                        <p className="truncate text-sm font-medium">{optionName}</p>
+                        <div className="mt-1 flex items-center justify-between">
                           <span
                             className={classNames(
-                              'mt-1 inline-flex h-6 min-w-6 items-center justify-center rounded-full border px-2 text-xs font-semibold',
-                              isSelected
-                                ? 'border-white/25 bg-white/10 text-white'
-                                : 'border-slate-200 bg-slate-100 text-slate-500',
+                              'text-xs',
+                              isSelected ? 'text-sky-100' : getDelayColor(delayState),
                             )}
                           >
-                            {optionNet?.type?.toUpperCase() ?? 'NET'}
-                          </span>
-                        </div>
-
-                        <div className="mt-4 flex items-center justify-between gap-3 text-xs font-medium">
-                          <span
-                            className={classNames(
-                              'rounded-full px-3 py-1',
-                              isSelected
-                                ? 'bg-white/12 text-white'
-                                : 'bg-slate-100 text-slate-500',
-                            )}
-                          >
-                            {isSelected ? '当前已生效' : '点击切换'}
-                          </span>
-                          <span
-                            className={classNames(
-                              'rounded-full px-3 py-1',
-                              getDelayTone(delayState, isSelected),
-                            )}
-                          >
-                            {isBusy
-                              ? 'Updating...'
-                              : delayLabel ?? (isSelected ? 'Selected' : 'Use')}
+                            {delayLabel ?? '\u00A0'}
                           </span>
                         </div>
                       </button>
                     )
                   })}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </section>
         )
       })}
 
       {groups.length === 0 && (
-        <section className="surface p-8 text-center">
-          <p className="font-display text-xl font-semibold text-slate-900">
+        <div className="surface px-6 py-10 text-center">
+          <p className="text-sm font-medium text-slate-500">
             没有匹配到可切换的 selector。
           </p>
-          <p className="mt-2 text-sm text-slate-500">
-            试着缩短搜索词，或者确认当前配置已经成功加载。
-          </p>
-        </section>
+        </div>
       )}
     </div>
   )

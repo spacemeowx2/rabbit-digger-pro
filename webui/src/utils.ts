@@ -107,17 +107,22 @@ export function parseLogChunk(chunk: string): LogEntry[] {
             timestamp?: string
             level?: string
             message?: string
-            fields?: {
-              message?: string
-            }
+            target?: string
+            fields?: Record<string, unknown>
+            span?: Record<string, unknown>
+            spans?: Array<Record<string, unknown>>
           }
 
           return {
             id: `${Date.now()}-${index}-${rawLine.length}`,
             time: parsed.timestamp ?? null,
             level: parsed.level ?? 'LOG',
-            message: parsed.fields?.message ?? parsed.message ?? rawLine,
+            message: parsed.fields?.message as string ?? parsed.message ?? rawLine,
             raw: rawLine,
+            target: parsed.target ?? null,
+            fields: parsed.fields ?? null,
+            span: parsed.span ?? null,
+            spans: parsed.spans ?? null,
           }
         } catch {
           // Fall through to the plain-text parser below.
@@ -135,8 +140,72 @@ export function parseLogChunk(chunk: string): LogEntry[] {
         level,
         message,
         raw: rawLine,
+        target: null,
+        fields: null,
+        span: null,
+        spans: null,
       }
     })
+}
+
+export function extractLogContext(entry: LogEntry): {
+  dest: string | null
+  src: string | null
+  netList: string[] | null
+  process: string | null
+  extraFields: Record<string, unknown>
+} {
+  const fields = entry.fields
+  if (!fields) {
+    return { dest: null, src: null, netList: null, process: null, extraFields: {} }
+  }
+
+  let dest: string | null = null
+  let src: string | null = null
+  let netList: string[] | null = null
+  let process: string | null = null
+  const extraFields: Record<string, unknown> = {}
+
+  // ctx is logged as a debug-formatted string like: Context { data: {...}, net_list: [...] }
+  // or it may be a structured object depending on serialization
+  const ctx = fields.ctx
+  if (typeof ctx === 'string') {
+    // Try to extract dest_domain from debug string
+    const destMatch = ctx.match(/dest_domain[^"]*"([^"]+)"/)
+      ?? ctx.match(/domain:\s*"?([^",\s}]+)/)
+    if (destMatch) dest = destMatch[1]
+
+    const srcMatch = ctx.match(/src_socket_addr[^"]*"([^"]+)"/)
+      ?? ctx.match(/src_socket_addr:\s*"?([^",\s}]+)/)
+    if (srcMatch) src = srcMatch[1]
+
+    const netListMatch = ctx.match(/net_list:\s*\[([^\]]*)\]/)
+    if (netListMatch) {
+      netList = netListMatch[1]
+        .split(',')
+        .map((s) => s.trim().replace(/^"|"$/g, ''))
+        .filter(Boolean)
+    }
+
+    const processMatch = ctx.match(/process_name[^"]*"([^"]+)"/)
+      ?? ctx.match(/process_info[^"]*"([^"]+)"/)
+    if (processMatch) process = processMatch[1]
+  } else if (ctx && typeof ctx === 'object') {
+    const ctxObj = ctx as Record<string, unknown>
+    if (typeof ctxObj.dest_domain === 'string') dest = ctxObj.dest_domain
+    if (typeof ctxObj.src_socket_addr === 'string') src = ctxObj.src_socket_addr
+    if (Array.isArray(ctxObj.net_list)) netList = ctxObj.net_list as string[]
+    if (typeof ctxObj.process_info === 'string') process = ctxObj.process_info
+  }
+
+  // Collect other fields (skip message and ctx which are already handled)
+  for (const [key, value] of Object.entries(fields)) {
+    if (key !== 'message' && key !== 'ctx') {
+      extraFields[key] = value
+    }
+  }
+
+  return { dest, src, netList, process, extraFields }
 }
 
 export function getSelectGroups(config: RdpConfig | null): Array<[string, NetConfig]> {
