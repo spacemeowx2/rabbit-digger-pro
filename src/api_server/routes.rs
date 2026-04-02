@@ -41,12 +41,18 @@ impl ApiServer {
             .layer(TraceLayer::new_for_http());
 
         if let Some(webui) = &self.web_ui {
+            // Runtime override: serve from filesystem path
             let spa_index = std::path::Path::new(webui).join("index.html");
             router = router.fallback_service(get_service(
                 ServeDir::new(webui)
                     .append_index_html_on_directories(true)
                     .fallback(ServeFile::new(spa_index)),
             ))
+        } else {
+            #[cfg(feature = "webui_embed")]
+            {
+                router = router.merge(super::embedded_webui::embedded_webui_router());
+            }
         }
 
         Ok(router)

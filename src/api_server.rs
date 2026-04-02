@@ -6,6 +6,8 @@ use tokio::net::TcpListener;
 
 use crate::config::ConfigManager;
 
+#[cfg(feature = "webui_embed")]
+mod embedded_webui;
 mod handlers;
 mod routes;
 
