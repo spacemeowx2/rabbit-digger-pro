@@ -56,4 +56,33 @@ export const rdpApi = {
       method: 'DELETE',
     })
   },
+  applyConfig(source: Record<string, unknown>) {
+    return readJson<null>('/api/config', {
+      method: 'POST',
+      body: JSON.stringify(source),
+    })
+  },
+  engineStop() {
+    return readJson<{ ok: boolean }>('/api/engine/stop', {
+      method: 'POST',
+    })
+  },
+  getUserdata<T = unknown>(path: string) {
+    return readJson<T>(`/api/userdata/${encodeURIComponent(path)}`)
+  },
+  putUserdata(path: string, value: string) {
+    return readJson<{ copied: number }>(`/api/userdata/${encodeURIComponent(path)}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: value,
+    })
+  },
+  deleteUserdata(path: string) {
+    return readJson<{ ok: boolean }>(`/api/userdata/${encodeURIComponent(path)}`, {
+      method: 'DELETE',
+    })
+  },
+  listUserdata() {
+    return readJson<{ keys: Array<{ key: string; updated_at: string }> }>('/api/userdata')
+  },
 }

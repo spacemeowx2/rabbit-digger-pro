@@ -3,8 +3,9 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use rabbit_digger::RabbitDigger;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 
-use crate::config::ConfigManager;
+use crate::config::{ConfigManager, ImportSource};
 
 #[cfg(feature = "webui_embed")]
 mod embedded_webui;
@@ -16,6 +17,9 @@ pub struct ApiServer {
     pub config_manager: ConfigManager,
     pub access_token: Option<String>,
     pub web_ui: Option<String>,
+    /// When set, POST /api/config sends ImportSource through this channel
+    /// instead of spawning start_stream directly.
+    pub source_sender: Option<mpsc::Sender<ImportSource>>,
 }
 
 impl ApiServer {
@@ -61,6 +65,7 @@ mod tests {
             config_manager: app.cfg_mgr.clone(),
             access_token: None,
             web_ui: None,
+            source_sender: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -167,6 +172,7 @@ mod tests {
             config_manager: app.cfg_mgr.clone(),
             access_token: None,
             web_ui: Some(tmp.path().to_string_lossy().to_string()),
+            source_sender: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -203,6 +209,7 @@ mod tests {
             config_manager: app.cfg_mgr.clone(),
             access_token: Some("secret".to_string()),
             web_ui: None,
+            source_sender: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -247,6 +254,7 @@ mod tests {
             config_manager: app.cfg_mgr.clone(),
             access_token: None,
             web_ui: None,
+            source_sender: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");

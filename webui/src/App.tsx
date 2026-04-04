@@ -5,19 +5,31 @@ import {
   Route,
   Routes,
 } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import {
   LayersIcon,
   LinkIcon,
   LogIcon,
   PulseIcon,
+  SettingsIcon,
 } from './components/icons'
 import { SidebarSparkline } from './components/sidebar-sparkline'
 import { useRdpDashboard } from './hooks/use-rdp-dashboard'
 import { ConnectionsPage } from './pages/connections-page'
 import { LogsPage } from './pages/logs-page'
 import { SelectNetsPage } from './pages/select-nets-page'
+import { SettingsPage } from './pages/settings-page'
 import { classNames, formatBytes, formatRate } from './utils'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  },
+})
 
 const navigation = [
   {
@@ -35,6 +47,11 @@ const navigation = [
     label: '日志',
     icon: LogIcon,
   },
+  {
+    to: '/settings',
+    label: '设置',
+    icon: SettingsIcon,
+  },
 ]
 
 function Shell() {
@@ -48,6 +65,7 @@ function Shell() {
     busyNet,
     busyConnectionId,
     closingAll,
+    refreshConfig,
     selectNet,
     closeConnection,
     closeAllConnections,
@@ -76,7 +94,7 @@ function Shell() {
           </div>
         </div>
 
-        <nav className="mt-3 grid grid-cols-3 gap-1 lg:mt-4 lg:flex lg:grid-cols-none lg:flex-col lg:gap-0.5">
+        <nav className="mt-3 grid grid-cols-4 gap-1 lg:mt-4 lg:flex lg:grid-cols-none lg:flex-col lg:gap-0.5">
           {navigation.map((item) => {
             const Icon = item.icon
             return (
@@ -157,6 +175,12 @@ function Shell() {
             path="/logs"
             element={<LogsPage logs={logs} onClearLogs={clearLogs} />}
           />
+          <Route
+            path="/settings"
+            element={
+              <SettingsPage runtimeState={runtimeState} onRefreshConfig={refreshConfig} />
+            }
+          />
           <Route path="*" element={<Navigate to="/select-net" replace />} />
         </Routes>
       </main>
@@ -166,9 +190,11 @@ function Shell() {
 
 function App() {
   return (
-    <BrowserRouter>
-      <Shell />
-    </BrowserRouter>
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <Shell />
+      </BrowserRouter>
+    </QueryClientProvider>
   )
 }
 

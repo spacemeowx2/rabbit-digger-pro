@@ -1,246 +1,60 @@
-import {
-  startTransition,
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useRef,
-  useState,
-} from 'react'
-import { applyPatch, type Operation } from 'fast-json-patch'
+import { useCallback, useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { getWebSocketUrl, rdpApi } from '../api'
-import type { ConnectionSnapshot, LogEntry, RdpConfig, TrafficSample } from '../types'
-import { parseLogChunk, updateSelectedNet } from '../utils'
-
-const EMPTY_CONNECTIONS: ConnectionSnapshot = {
-  connections: {},
-  total_upload: 0,
-  total_download: 0,
-}
+import { rdpApi } from '../api'
+import type { RdpConfig } from '../types'
+import { updateSelectedNet } from '../utils'
+import { startStreams, useRdpStore } from '../store'
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error'
 }
 
-type ConnectionStreamStats = {
-  mode: 'ws-patch'
-  fullFrames: number
-  patchFrames: number
-  lastFrameType: 'full' | 'patch' | null
-  lastEventAt: number | null
-}
-
-declare global {
-  interface Window {
-    __RDP_DEBUG?: {
-      connectionStream?: ConnectionStreamStats
-    }
-  }
-}
-
 export function useRdpDashboard() {
-  const [config, setConfig] = useState<RdpConfig | null>(null)
-  const [runtimeState, setRuntimeState] = useState('Connecting')
-  const [connections, setConnections] = useState<ConnectionSnapshot>(EMPTY_CONNECTIONS)
-  const [logs, setLogs] = useState<LogEntry[]>([])
-  const [trafficHistory, setTrafficHistory] = useState<TrafficSample[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [busyNet, setBusyNet] = useState<string | null>(null)
-  const [busyConnectionId, setBusyConnectionId] = useState<string | null>(null)
-  const [closingAll, setClosingAll] = useState(false)
+  const queryClient = useQueryClient()
 
-  const lastTrafficSample = useRef<{
-    totalUpload: number
-    totalDownload: number
-    timestamp: number
-  } | null>(null)
-  const lastConnectionSnapshot = useRef<ConnectionSnapshot>(EMPTY_CONNECTIONS)
-  const connectionStreamStats = useRef<ConnectionStreamStats>({
-    mode: 'ws-patch',
-    fullFrames: 0,
-    patchFrames: 0,
-    lastFrameType: null,
-    lastEventAt: null,
-  })
-
-  const refreshConfig = useCallback(async () => {
-    try {
-      const nextConfig = await rdpApi.getConfig()
-      setConfig(nextConfig)
-    } catch (caught) {
-      setError(getErrorMessage(caught))
-    }
-  }, [])
-
-  const refreshState = useCallback(async () => {
-    try {
-      const nextState = await rdpApi.getState()
-      setRuntimeState(nextState)
-    } catch (caught) {
-      setError(getErrorMessage(caught))
-    }
-  }, [])
-
-  const applyConnectionSnapshot = useEffectEvent((snapshot: ConnectionSnapshot) => {
-    startTransition(() => {
-      setConnections(snapshot)
-      lastConnectionSnapshot.current = snapshot
-
-      const now = Date.now()
-      const previous = lastTrafficSample.current
-      const elapsed = previous ? Math.max(now - previous.timestamp, 1) : 1000
-      const uploadRate = previous
-        ? Math.max(0, ((snapshot.total_upload - previous.totalUpload) * 1000) / elapsed)
-        : 0
-      const downloadRate = previous
-        ? Math.max(0, ((snapshot.total_download - previous.totalDownload) * 1000) / elapsed)
-        : 0
-
-      lastTrafficSample.current = {
-        totalUpload: snapshot.total_upload,
-        totalDownload: snapshot.total_download,
-        timestamp: now,
+  // REST queries via TanStack Query
+  const { data: config = null } = useQuery<RdpConfig | null>({
+    queryKey: ['config'],
+    queryFn: async () => {
+      try {
+        return await rdpApi.getConfig()
+      } catch {
+        return null
       }
-
-      setTrafficHistory((current) => [
-        ...current.slice(-31),
-        {
-          id: now,
-          uploadRate,
-          downloadRate,
-        },
-      ])
-    })
+    },
+    refetchInterval: 10_000,
   })
 
-  const updateConnectionStreamStats = useEffectEvent((frameType: 'full' | 'patch') => {
-    const current = connectionStreamStats.current
-    const next = {
-      ...current,
-      fullFrames: current.fullFrames + Number(frameType === 'full'),
-      patchFrames: current.patchFrames + Number(frameType === 'patch'),
-      lastFrameType: frameType,
-      lastEventAt: Date.now(),
-    }
-
-    connectionStreamStats.current = next
-    window.__RDP_DEBUG = {
-      ...window.__RDP_DEBUG,
-      connectionStream: next,
-    }
+  const { data: runtimeState = 'Connecting' } = useQuery<string>({
+    queryKey: ['state'],
+    queryFn: () => rdpApi.getState(),
+    refetchInterval: 5_000,
+    retry: false,
   })
 
-  const appendLogs = useEffectEvent((chunk: string) => {
-    const nextLines = parseLogChunk(chunk)
-    if (nextLines.length === 0) {
-      return
-    }
+  // Real-time data + UI state from Zustand
+  const connections = useRdpStore((s) => s.connections)
+  const logs = useRdpStore((s) => s.logs)
+  const trafficHistory = useRdpStore((s) => s.trafficHistory)
+  const error = useRdpStore((s) => s.error)
+  const busyNet = useRdpStore((s) => s.busyNet)
+  const busyConnectionId = useRdpStore((s) => s.busyConnectionId)
+  const closingAll = useRdpStore((s) => s.closingAll)
+  const setError = useRdpStore((s) => s.setError)
+  const setBusyNet = useRdpStore((s) => s.setBusyNet)
+  const setBusyConnectionId = useRdpStore((s) => s.setBusyConnectionId)
+  const setClosingAll = useRdpStore((s) => s.setClosingAll)
+  const clearLogs = useRdpStore((s) => s.clearLogs)
 
-    startTransition(() => {
-      setLogs((current) => [...current, ...nextLines].slice(-500))
-    })
-  })
-
+  // Start WebSocket streams once, pass runtime state accessor
   useEffect(() => {
-    void refreshConfig()
-    void refreshState()
+    startStreams(() => queryClient.getQueryData<string>(['state']) ?? 'Connecting')
+  }, [queryClient])
 
-    const stateTimer = window.setInterval(() => {
-      void refreshState()
-    }, 5000)
-
-    return () => {
-      window.clearInterval(stateTimer)
-    }
-  }, [refreshConfig, refreshState])
-
-  useEffect(() => {
-    let closed = false
-    let socket: WebSocket | null = null
-    let retryTimer = 0
-
-    const connect = () => {
-      socket = new WebSocket(getWebSocketUrl('/api/stream/connection?patch=true'))
-
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(String(event.data)) as
-            | { full?: ConnectionSnapshot; patch?: Operation[] }
-            | ConnectionSnapshot
-
-          if ('patch' in payload && Array.isArray(payload.patch)) {
-            const nextSnapshot = applyPatch(
-              structuredClone(lastConnectionSnapshot.current),
-              payload.patch,
-              false,
-              true,
-            ).newDocument as ConnectionSnapshot
-
-            updateConnectionStreamStats('patch')
-            applyConnectionSnapshot(nextSnapshot)
-            return
-          }
-
-          const snapshot =
-            'full' in payload && payload.full ? payload.full : (payload as ConnectionSnapshot)
-          updateConnectionStreamStats('full')
-          applyConnectionSnapshot(snapshot)
-        } catch (caught) {
-          setError(getErrorMessage(caught))
-        }
-      }
-
-      socket.onerror = () => {
-        socket?.close()
-      }
-
-      socket.onclose = () => {
-        if (!closed) {
-          retryTimer = window.setTimeout(connect, 1500)
-        }
-      }
-    }
-
-    connect()
-
-    return () => {
-      closed = true
-      window.clearTimeout(retryTimer)
-      socket?.close()
-    }
-  }, [])
-
-  useEffect(() => {
-    let closed = false
-    let socket: WebSocket | null = null
-    let retryTimer = 0
-
-    const connect = () => {
-      socket = new WebSocket(getWebSocketUrl('/api/stream/logs'))
-
-      socket.onmessage = (event) => {
-        appendLogs(String(event.data))
-      }
-
-      socket.onerror = () => {
-        socket?.close()
-      }
-
-      socket.onclose = () => {
-        if (!closed) {
-          retryTimer = window.setTimeout(connect, 1500)
-        }
-      }
-    }
-
-    connect()
-
-    return () => {
-      closed = true
-      window.clearTimeout(retryTimer)
-      socket?.close()
-    }
-  }, [])
+  const refreshConfig = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['config'] })
+  }, [queryClient])
 
   const selectNet = useCallback(
     async (netName: string, selected: string) => {
@@ -248,39 +62,47 @@ export function useRdpDashboard() {
 
       setBusyNet(netName)
       setError(null)
-      setConfig((current) => updateSelectedNet(current, netName, selected))
+      queryClient.setQueryData<RdpConfig | null>(
+        ['config'],
+        (current) => updateSelectedNet(current ?? null, netName, selected),
+      )
 
       try {
         await rdpApi.selectNet(netName, selected)
       } catch (caught) {
-        setConfig((current) =>
-          previousSelected ? updateSelectedNet(current, netName, previousSelected) : current,
+        queryClient.setQueryData<RdpConfig | null>(
+          ['config'],
+          (current) =>
+            previousSelected
+              ? updateSelectedNet(current ?? null, netName, previousSelected)
+              : current ?? null,
         )
         setError(getErrorMessage(caught))
       } finally {
         setBusyNet(null)
       }
     },
-    [config],
+    [config, queryClient, setBusyNet, setError],
   )
 
-  const closeConnection = useCallback(async (connectionId: string) => {
-    setBusyConnectionId(connectionId)
-    setError(null)
-
-    try {
-      await rdpApi.closeConnection(connectionId)
-    } catch (caught) {
-      setError(getErrorMessage(caught))
-    } finally {
-      setBusyConnectionId(null)
-    }
-  }, [])
+  const closeConnection = useCallback(
+    async (connectionId: string) => {
+      setBusyConnectionId(connectionId)
+      setError(null)
+      try {
+        await rdpApi.closeConnection(connectionId)
+      } catch (caught) {
+        setError(getErrorMessage(caught))
+      } finally {
+        setBusyConnectionId(null)
+      }
+    },
+    [setBusyConnectionId, setError],
+  )
 
   const closeAllConnections = useCallback(async () => {
     setClosingAll(true)
     setError(null)
-
     try {
       await rdpApi.closeAllConnections()
     } catch (caught) {
@@ -288,11 +110,7 @@ export function useRdpDashboard() {
     } finally {
       setClosingAll(false)
     }
-  }, [])
-
-  const clearLogs = useCallback(() => {
-    setLogs([])
-  }, [])
+  }, [setClosingAll, setError])
 
   return {
     config,

@@ -36,6 +36,7 @@ pub(super) struct Ctx {
     pub(super) rd: RabbitDigger,
     pub(super) cfg_mgr: ConfigManager,
     pub(super) userdata: Arc<FileStorage>,
+    pub(super) source_sender: Option<Arc<tokio::sync::mpsc::Sender<ImportSource>>>,
 }
 
 pub(super) enum ApiError {
@@ -84,15 +85,35 @@ pub(super) async fn get_config(
 }
 
 pub(super) async fn post_config(
-    Extension(Ctx { rd, cfg_mgr, .. }): Extension<Ctx>,
+    Extension(Ctx {
+        rd,
+        cfg_mgr,
+        source_sender,
+        ..
+    }): Extension<Ctx>,
     Json(source): Json<ImportSource>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let stream = cfg_mgr.config_stream(source).await?;
-
-    rd.stop().await?;
-    tokio::spawn(rd.start_stream(stream));
+    if let Some(sender) = &source_sender {
+        // Daemon mode: send source through the channel to the main loop
+        sender
+            .send(source)
+            .await
+            .map_err(|_| ApiError::Anyhow(anyhow::anyhow!("Engine loop is not running")))?;
+    } else {
+        // Legacy mode: directly spawn start_stream
+        let stream = cfg_mgr.config_stream(source).await?;
+        rd.stop().await?;
+        tokio::spawn(rd.start_stream(stream));
+    }
 
     Ok(Json(Value::Null))
+}
+
+pub(super) async fn post_engine_stop(
+    Extension(Ctx { rd, .. }): Extension<Ctx>,
+) -> Result<impl IntoResponse, ApiError> {
+    rd.stop().await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 pub(super) async fn get_registry(

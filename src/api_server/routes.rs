@@ -63,6 +63,7 @@ impl ApiServer {
             rd: self.rabbit_digger.clone(),
             cfg_mgr: self.config_manager.clone(),
             userdata: Arc::new(FileStorage::new(FolderType::Data, "userdata").await?),
+            source_sender: self.source_sender.as_ref().map(|s| Arc::new(s.clone())),
         };
 
         let mut router = Router::new()
@@ -86,6 +87,7 @@ impl ApiServer {
                     .delete(handlers::delete_userdata),
             )
             .route("/userdata", get(handlers::list_userdata))
+            .route("/engine/stop", post(handlers::post_engine_stop))
             .route("/stream/connection", get(handlers::get_connection))
             .route("/stream/logs", get(handlers::ws_log))
             .layer(Extension(ctx));

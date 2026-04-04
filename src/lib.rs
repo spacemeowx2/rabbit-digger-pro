@@ -10,6 +10,7 @@ pub mod config;
 pub mod log;
 pub mod schema;
 mod select;
+pub mod service;
 pub mod storage;
 pub mod util;
 
@@ -48,10 +49,11 @@ pub struct App {
 }
 
 #[derive(Default, Debug)]
-pub struct ApiServer {
+pub struct ApiServerConfig {
     pub bind: Option<String>,
     pub access_token: Option<String>,
     pub web_ui: Option<String>,
+    pub source_sender: Option<tokio::sync::mpsc::Sender<config::ImportSource>>,
 }
 
 impl App {
@@ -61,14 +63,15 @@ impl App {
 
         Ok(Self { rd, cfg_mgr })
     }
-    pub async fn run_api_server(&self, api_server: ApiServer) -> Result<()> {
+    pub async fn run_api_server(&self, config: ApiServerConfig) -> Result<()> {
         #[cfg(feature = "api_server")]
-        if let Some(bind) = api_server.bind {
+        if let Some(bind) = config.bind {
             api_server::ApiServer {
                 rabbit_digger: self.rd.clone(),
                 config_manager: self.cfg_mgr.clone(),
-                access_token: api_server.access_token,
-                web_ui: api_server.web_ui,
+                access_token: config.access_token,
+                web_ui: config.web_ui,
+                source_sender: config.source_sender,
             }
             .run(&bind)
             .await

@@ -8,7 +8,7 @@ use futures::{
     stream::{select, TryStreamExt},
     StreamExt,
 };
-use rabbit_digger_pro::{config::ImportSource, schema, util::exit_stream, ApiServer, App};
+use rabbit_digger_pro::{config::ImportSource, schema, util::exit_stream, ApiServerConfig, App};
 use tracing_subscriber::filter::dynamic_filter_fn;
 
 #[cfg(feature = "telemetry")]
@@ -55,14 +55,20 @@ enum Command {
         #[clap(flatten)]
         api_server: ApiServerArgs,
     },
+    /// Manage system service
+    Service {
+        #[clap(subcommand)]
+        action: rabbit_digger_pro::service::ServiceAction,
+    },
 }
 
 impl ApiServerArgs {
-    fn to_api_server(&self) -> ApiServer {
-        ApiServer {
+    fn to_api_server_config(&self) -> ApiServerConfig {
+        ApiServerConfig {
             bind: self.bind.clone(),
             access_token: self.access_token.clone(),
             web_ui: self.web_ui.clone(),
+            source_sender: None,
         }
     }
 }
@@ -76,7 +82,8 @@ async fn write_config(path: impl AsRef<Path>, cfg: &rabbit_digger::Config) -> Re
 async fn real_main(args: Args) -> Result<()> {
     let app = App::new().await?;
 
-    app.run_api_server(args.api_server.to_api_server()).await?;
+    app.run_api_server(args.api_server.to_api_server_config())
+        .await?;
 
     let config_path = args.config.clone();
     let write_config_path = args.write_config;
@@ -171,8 +178,8 @@ async fn main() -> Result<()> {
     .with(json_layer)
     .init();
 
-    match &args.cmd {
-        Some(Command::GenerateSchema { path }) => {
+    match args.cmd {
+        Some(Command::GenerateSchema { ref path }) => {
             if let Some(path) = path {
                 schema::write_schema(path).await?;
             } else {
@@ -181,13 +188,18 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some(Command::Server { api_server }) => {
+        Some(Command::Server { ref api_server }) => {
             let app = App::new().await?;
 
-            app.run_api_server(api_server.to_api_server()).await?;
+            app.run_api_server(api_server.to_api_server_config())
+                .await?;
 
             tokio::signal::ctrl_c().await?;
 
+            return Ok(());
+        }
+        Some(Command::Service { action }) => {
+            rabbit_digger_pro::service::run(action).await?;
             return Ok(());
         }
         None => {}
