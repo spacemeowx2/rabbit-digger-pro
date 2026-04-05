@@ -31,7 +31,7 @@ const DEFAULT_SETTINGS: DaemonSettings = {
   activeIndex: 0,
   port: 10800,
   tunEnabled: false,
-  tunIp: '192.168.233.1/24',
+  tunIp: '198.18.0.1/15',
   tunMtu: 1400,
 }
 
@@ -87,20 +87,18 @@ function buildConfigText(settings: DaemonSettings): string {
   const outboundNet = 'proxy'
 
   if (settings.tunEnabled) {
-    net['raw-gateway'] = {
-      type: 'raw',
-      device: { tun: 'rdp-tun0' },
+    // bind_device on local net to prevent routing loop
+    net['local'] = { type: 'local', bind_device: 'en0' }
+    net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
+    server['tun'] = {
+      type: 'tun',
+      device: 'utun100',
       ip_addr: settings.tunIp,
       mtu: settings.tunMtu,
-    }
-    net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
-    server['tun-forward'] = {
-      type: 'forward',
-      bind: '0.0.0.0:0',
-      listen: 'raw-gateway',
+      dns_mode: 'fake-ip',
       net: 'resolve',
-      tcp: true,
-      udp: true,
+      resolve_net: 'local',
+      bypass_ips: [],
     }
   }
 

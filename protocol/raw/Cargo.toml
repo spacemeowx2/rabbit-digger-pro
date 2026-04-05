@@ -8,8 +8,9 @@ edition = "2018"
 rd-interface = { path = "../../rd-interface/", version = "0.4" }
 rd-std = { path = "../../rd-std/", version = "0.1" }
 # rd-interface = "0.3"
-serde = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1.26"
+simple-dns = "0.9"
 tokio-smoltcp = "0.6.0"
 tokio = { version = "1.50.0", features = ["rt", "macros", "net"] }
 pcap = { version = "2.4.0", optional = true }
@@ -19,6 +20,7 @@ parking_lot = "0.12.1"
 parking_lot_core = "0.9.8"
 
 tokio-util = { version = "0.7.18", features = ["codec"] }
+tproxy-config = "5"
 
 [target.'cfg(unix)'.dependencies.tun-crate]
 version = "0.8.6"

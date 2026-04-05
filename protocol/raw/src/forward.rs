@@ -13,7 +13,7 @@ use tokio_smoltcp::{
 
 use crate::gateway::MapTable;
 
-mod source;
+pub(crate) mod source;
 
 struct Forward {
     net: Net,
