@@ -56,6 +56,9 @@ pub struct TunServerConfig {
     /// Net for real DNS resolution (should bind to physical interface)
     #[serde(default)]
     pub resolve_net: Option<NetRef>,
+    /// Upstream DNS server for redir-host mode (e.g. "1.1.1.1")
+    #[serde(default)]
+    pub upstream_dns: Option<String>,
     /// Proxy server IPs to bypass TUN (prevent routing loop)
     #[serde(default)]
     pub bypass_ips: Vec<String>,
@@ -138,11 +141,22 @@ impl IServer for TunServer {
             .filter_map(|s| s.parse().ok())
             .collect();
 
+        // In fake-ip mode, point system DNS to the TUN gateway (we answer DNS ourselves).
+        // In redir-host mode, use the configured upstream DNS server.
+        let dns_ip = match config.dns_mode {
+            DnsMode::FakeIp => IpAddr::V4(gateway),
+            DnsMode::RedirHost => config
+                .upstream_dns
+                .as_ref()
+                .and_then(|s| s.parse::<IpAddr>().ok())
+                .unwrap_or(IpAddr::V4(gateway)),
+        };
+
         let tproxy_args = tproxy_config::TproxyArgs::new()
             .tun_name(&config.device)
             .tun_ip(IpAddr::V4(ip_addr))
             .tun_gateway(IpAddr::V4(gateway))
-            .tun_dns(IpAddr::V4(gateway))
+            .tun_dns(dns_ip)
             .tun_mtu(config.mtu)
             .bypass_ips(&bypass)
             .ipv4_default_route(true)
