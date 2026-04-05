@@ -97,7 +97,6 @@ function buildConfigText(settings: DaemonSettings): string {
       mtu: settings.tunMtu,
       dns_mode: 'fake-ip',
       net: 'resolve',
-      resolve_net: 'local',
       bypass_ips: [],
     }
   }
