@@ -16,12 +16,15 @@ interface Subscription {
   updatedAt?: string
 }
 
+type DnsMode = 'fake-ip' | 'redir-host'
+
 interface DaemonSettings {
   subscriptions: Subscription[]
   /** Index of the active subscription (-1 or undefined = none) */
   activeIndex: number
   port: number
   tunEnabled: boolean
+  tunDnsMode: DnsMode
   tunIp: string
   tunMtu: number
 }
@@ -31,6 +34,7 @@ const DEFAULT_SETTINGS: DaemonSettings = {
   activeIndex: 0,
   port: 10800,
   tunEnabled: false,
+  tunDnsMode: 'fake-ip',
   tunIp: '198.18.0.1/15',
   tunMtu: 1400,
 }
@@ -95,7 +99,7 @@ function buildConfigText(settings: DaemonSettings): string {
       device: 'utun100',
       ip_addr: settings.tunIp,
       mtu: settings.tunMtu,
-      dns_mode: 'fake-ip',
+      dns_mode: settings.tunDnsMode,
       net: 'resolve',
       bypass_ips: [],
     }
@@ -554,6 +558,21 @@ export function SettingsPage({ runtimeState }: SettingsPageProps) {
           </div>
           {settings.tunEnabled && (
             <>
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-slate-600 w-32 shrink-0">DNS 模式</label>
+                <select
+                  className="field w-40"
+                  value={settings.tunDnsMode}
+                  onChange={(e) => {
+                    const next = { ...settings, tunDnsMode: e.target.value as DnsMode }
+                    setSettings(next)
+                    void saveSettings(next)
+                  }}
+                >
+                  <option value="fake-ip">Fake-IP</option>
+                  <option value="redir-host">Redir-Host</option>
+                </select>
+              </div>
               <div className="flex items-center gap-3">
                 <label className="text-sm text-slate-600 w-32 shrink-0">IP 地址</label>
                 <input
