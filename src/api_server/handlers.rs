@@ -13,7 +13,10 @@ use axum::{
         Extension, Path, Query, WebSocketUpgrade,
     },
     http::HeaderValue,
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     BoxError, Json,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -37,10 +40,13 @@ pub(super) struct Ctx {
     pub(super) cfg_mgr: ConfigManager,
     pub(super) userdata: Arc<FileStorage>,
     pub(super) source_sender: Option<Arc<tokio::sync::mpsc::Sender<ImportSource>>>,
+    pub(super) log_file_path: Option<std::path::PathBuf>,
 }
 
 pub(super) enum ApiError {
     NotFound,
+    /// The engine is not running; the requested operation requires a running engine.
+    EngineNotRunning,
     Anyhow(anyhow::Error),
     Other(BoxError),
 }
@@ -53,48 +59,64 @@ impl ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(inner: anyhow::Error) -> Self {
+        // Map well-known engine errors to proper status codes
+        if inner.to_string().contains("Not running") {
+            return ApiError::EngineNotRunning;
+        }
         ApiError::Anyhow(inner)
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = Json(json!({
-            "error": match self {
-                ApiError::Anyhow(e) => e.to_string(),
-                ApiError::NotFound => "Not found".to_string(),
-                ApiError::Other(e) => e.to_string(),
-            },
-        }));
+        let (status, message) = match self {
+            ApiError::NotFound => (StatusCode::NOT_FOUND, "Not found".to_string()),
+            ApiError::EngineNotRunning => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Engine not running".to_string(),
+            ),
+            ApiError::Anyhow(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            ApiError::Other(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        };
 
-        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
+        (status, Json(json!({ "error": message }))).into_response()
     }
 }
 
 pub(super) async fn get_config(
     Extension(Ctx { rd, .. }): Extension<Ctx>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        HeaderName::from_static("content-type"),
-        HeaderValue::from_static("application/json"),
-    );
-
-    let config_str = rd.get_config(|c| c.to_owned()).await?;
-    Ok((headers, config_str))
+    match rd.get_config(|c| c.to_owned()).await {
+        Ok(config_str) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_static("application/json"),
+            );
+            Ok((headers, config_str).into_response())
+        }
+        Err(_) => Ok(Json(Value::Null).into_response()),
+    }
 }
+
+const LAST_SOURCE_KEY: &str = "daemon/last_source";
 
 pub(super) async fn post_config(
     Extension(Ctx {
         rd,
         cfg_mgr,
         source_sender,
+        userdata,
         ..
     }): Extension<Ctx>,
     Json(source): Json<ImportSource>,
 ) -> Result<impl IntoResponse, ApiError> {
     if let Some(sender) = &source_sender {
-        // Daemon mode: send source through the channel to the main loop
+        // Daemon mode: persist source for restore on restart
+        if let Ok(json) = serde_json::to_string(&source) {
+            let _ = userdata.set(LAST_SOURCE_KEY, &json).await;
+        }
+        // Send source through the channel to the main loop
         sender
             .send(source)
             .await
@@ -140,12 +162,6 @@ pub(super) async fn delete_connections(
     Extension(Ctx { rd, .. }): Extension<Ctx>,
 ) -> Result<Response, ApiError> {
     Ok(Json(&rd.stop_connections().await?).into_response())
-}
-
-pub(super) async fn get_state(
-    Extension(Ctx { rd, .. }): Extension<Ctx>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(&rd.state_str().await?).into_response())
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,4 +414,70 @@ pub(super) async fn ws_log(ws: WebSocketUpgrade) -> Result<impl IntoResponse, Ap
             }
         }
     }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsQuery {
+    #[serde(default = "default_tail")]
+    pub tail: usize,
+}
+fn default_tail() -> usize {
+    500
+}
+
+pub(super) async fn get_logs(
+    Extension(Ctx { log_file_path, .. }): Extension<Ctx>,
+    Query(LogsQuery { tail }): Query<LogsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let path =
+        log_file_path.ok_or_else(|| ApiError::Anyhow(anyhow::anyhow!("No log file configured")))?;
+
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| ApiError::Anyhow(e.into()))?;
+
+    // Take last N lines
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(tail);
+    let tail_lines: Vec<&str> = lines[start..].to_vec();
+
+    // Return as JSON array of raw JSON strings (each line is a JSON object)
+    let entries: Vec<Value> = tail_lines
+        .iter()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    Ok(Json(entries))
+}
+
+pub(super) async fn sse_events(
+    Extension(Ctx { rd, .. }): Extension<Ctx>,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+    // Subscribe before reading current status to avoid missing events
+    let mut rx = rd.subscribe_events();
+    let initial_status = rd.status();
+
+    let stream = async_stream::stream! {
+        // Send current status immediately on connect
+        let init = rabbit_digger::ServerEvent::StatusChanged { status: initial_status };
+        if let Ok(data) = serde_json::to_string(&init) {
+            yield Ok(Event::default().data(data));
+        }
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Ok(data) = serde_json::to_string(&event) {
+                        yield Ok(Event::default().data(data));
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("SSE client lagged, missed {n} events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }

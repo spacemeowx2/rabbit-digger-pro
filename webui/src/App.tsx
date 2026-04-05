@@ -13,6 +13,7 @@ import {
   LogIcon,
   PulseIcon,
   SettingsIcon,
+  StatusIcon,
 } from './components/icons'
 import { SidebarSparkline } from './components/sidebar-sparkline'
 import { useRdpDashboard } from './hooks/use-rdp-dashboard'
@@ -20,6 +21,7 @@ import { ConnectionsPage } from './pages/connections-page'
 import { LogsPage } from './pages/logs-page'
 import { SelectNetsPage } from './pages/select-nets-page'
 import { SettingsPage } from './pages/settings-page'
+import { StatusPage } from './pages/status-page'
 import { classNames, formatBytes, formatRate } from './utils'
 
 const queryClient = new QueryClient({
@@ -48,6 +50,11 @@ const navigation = [
     icon: LogIcon,
   },
   {
+    to: '/status',
+    label: '状态',
+    icon: StatusIcon,
+  },
+  {
     to: '/settings',
     label: '设置',
     icon: SettingsIcon,
@@ -57,6 +64,7 @@ const navigation = [
 function Shell() {
   const {
     config,
+    engineStatus,
     runtimeState,
     connections,
     logs,
@@ -65,7 +73,6 @@ function Shell() {
     busyNet,
     busyConnectionId,
     closingAll,
-    refreshConfig,
     selectNet,
     closeConnection,
     closeAllConnections,
@@ -94,7 +101,7 @@ function Shell() {
           </div>
         </div>
 
-        <nav className="mt-3 grid grid-cols-4 gap-1 lg:mt-4 lg:flex lg:grid-cols-none lg:flex-col lg:gap-0.5">
+        <nav className="mt-3 grid grid-cols-5 gap-1 lg:mt-4 lg:flex lg:grid-cols-none lg:flex-col lg:gap-0.5">
           {navigation.map((item) => {
             const Icon = item.icon
             return (
@@ -176,10 +183,12 @@ function Shell() {
             element={<LogsPage logs={logs} onClearLogs={clearLogs} />}
           />
           <Route
+            path="/status"
+            element={<StatusPage engineStatus={engineStatus} />}
+          />
+          <Route
             path="/settings"
-            element={
-              <SettingsPage runtimeState={runtimeState} onRefreshConfig={refreshConfig} />
-            }
+            element={<SettingsPage runtimeState={runtimeState} />}
           />
           <Route path="*" element={<Navigate to="/select-net" replace />} />
         </Routes>

@@ -54,6 +54,7 @@ pub struct ApiServerConfig {
     pub access_token: Option<String>,
     pub web_ui: Option<String>,
     pub source_sender: Option<tokio::sync::mpsc::Sender<config::ImportSource>>,
+    pub log_file_path: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -72,6 +73,7 @@ impl App {
                 access_token: config.access_token,
                 web_ui: config.web_ui,
                 source_sender: config.source_sender,
+                log_file_path: config.log_file_path,
             }
             .run(&bind)
             .await

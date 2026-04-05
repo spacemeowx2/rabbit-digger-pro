@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Pencil, RefreshCw, Trash2 } from 'lucide-react'
 
 import { rdpApi } from '../api'
 import { classNames } from '../utils'
@@ -17,6 +18,8 @@ interface Subscription {
 
 interface DaemonSettings {
   subscriptions: Subscription[]
+  /** Index of the active subscription (-1 or undefined = none) */
+  activeIndex: number
   port: number
   tunEnabled: boolean
   tunIp: string
@@ -25,6 +28,7 @@ interface DaemonSettings {
 
 const DEFAULT_SETTINGS: DaemonSettings = {
   subscriptions: [],
+  activeIndex: 0,
   port: 10800,
   tunEnabled: false,
   tunIp: '192.168.233.1/24',
@@ -67,18 +71,16 @@ function buildConfigText(settings: DaemonSettings): string {
   const server: Record<string, unknown> = {}
   const imports: unknown[] = []
 
-  for (const [i, sub] of settings.subscriptions.entries()) {
-    const selectName = i === 0 ? 'proxy' : `proxy-${i}`
+  const activeSub = settings.subscriptions[settings.activeIndex]
+  if (activeSub) {
     imports.push({
       type: 'clash',
       source: {
-        poll: { url: sub.url, interval: sub.interval * 60 },
+        poll: { url: activeSub.url, interval: activeSub.interval * 60 },
       },
-      select: selectName,
+      select: 'proxy',
     })
-  }
-
-  if (settings.subscriptions.length === 0) {
+  } else {
     net['proxy'] = { type: 'alias', net: 'local' }
   }
 
@@ -110,27 +112,6 @@ function buildConfigText(settings: DaemonSettings): string {
   }
 
   return JSON.stringify({ id: 'daemon', net, server, import: imports })
-}
-
-// ---------------------------------------------------------------------------
-// Icons
-// ---------------------------------------------------------------------------
-
-function RefreshIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
-      <path d="M21 3v5h-5" />
-    </svg>
-  )
-}
-
-function TrashIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-      <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-    </svg>
-  )
 }
 
 // ---------------------------------------------------------------------------
@@ -211,10 +192,9 @@ function EditDialog({ subscription, onSave, onCancel }: EditDialogProps) {
 
 interface SettingsPageProps {
   runtimeState: string
-  onRefreshConfig: () => void
 }
 
-export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProps) {
+export function SettingsPage({ runtimeState }: SettingsPageProps) {
   const [settings, setSettings] = useState<DaemonSettings>(DEFAULT_SETTINGS)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -224,8 +204,29 @@ export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProp
   const [newSubUrl, setNewSubUrl] = useState('')
   const [refreshingIndex, setRefreshingIndex] = useState<number | null>(null)
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [activatingIndex, setActivatingIndex] = useState<number | null>(null)
 
   const isRunning = runtimeState === 'Running'
+
+  // When engine settles (Running/Error/Idle), clear loading states
+  useEffect(() => {
+    if (runtimeState !== 'Starting' && runtimeState !== 'Stopping' && runtimeState !== 'Connecting') {
+      if (activatingIndex !== null) {
+        setActivatingIndex(null)
+        if (runtimeState === 'Error') {
+          setMessage({ type: 'err', text: '引擎启动失败' })
+        }
+      }
+      if (starting) {
+        setStarting(false)
+        if (runtimeState === 'Running') {
+          setMessage({ type: 'ok', text: '已启动' })
+        } else if (runtimeState === 'Error') {
+          setMessage({ type: 'err', text: '引擎启动失败' })
+        }
+      }
+    }
+  }, [runtimeState]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     rdpApi
@@ -258,14 +259,12 @@ export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProp
     try {
       await rdpApi.putUserdata(SETTINGS_KEY, JSON.stringify(settings))
       await rdpApi.applyConfig({ text: buildConfigText(settings) })
-      onRefreshConfig()
-      setMessage({ type: 'ok', text: '已启动' })
+      // SSE will push StatusChanged → useEffect clears starting
     } catch (e) {
-      setMessage({ type: 'err', text: `启动失败: ${e instanceof Error ? e.message : e}` })
-    } finally {
       setStarting(false)
+      setMessage({ type: 'err', text: `启动失败: ${e instanceof Error ? e.message : e}` })
     }
-  }, [settings, onRefreshConfig])
+  }, [settings])
 
   const stopEngine = useCallback(async () => {
     setStopping(true)
@@ -308,13 +307,34 @@ export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProp
 
   const removeSubscription = useCallback(
     (index: number) => {
-      const next = {
-        ...settings,
-        subscriptions: settings.subscriptions.filter((_, i) => i !== index),
+      const subs = settings.subscriptions.filter((_, i) => i !== index)
+      let { activeIndex } = settings
+      if (index === activeIndex) {
+        activeIndex = subs.length > 0 ? 0 : -1
+      } else if (index < activeIndex) {
+        activeIndex--
       }
-      void saveSettings(next)
+      void saveSettings({ ...settings, subscriptions: subs, activeIndex })
     },
     [settings, saveSettings],
+  )
+
+  const activateSubscription = useCallback(
+    async (index: number) => {
+      if (index === settings.activeIndex && isRunning) return
+      setActivatingIndex(index)
+      setMessage(null)
+      try {
+        const next = { ...settings, activeIndex: index }
+        await saveSettings(next)
+        await rdpApi.applyConfig({ text: buildConfigText(next) })
+        // SSE will push StatusChanged events → query invalidation → useEffect clears loading
+      } catch (e) {
+        setActivatingIndex(null)
+        setMessage({ type: 'err', text: `切换失败: ${e instanceof Error ? e.message : e}` })
+      }
+    },
+    [settings, saveSettings, isRunning],
   )
 
   const refreshSubscription = useCallback(
@@ -330,13 +350,13 @@ export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProp
         await saveSettings(next)
         if (isRunning) {
           await rdpApi.applyConfig({ text: buildConfigText(next) })
-          onRefreshConfig()
+          // SSE will push StatusChanged events → query invalidation → useEffect clears loading
         }
       } finally {
         setRefreshingIndex(null)
       }
     },
-    [settings, saveSettings, isRunning, onRefreshConfig],
+    [settings, saveSettings, isRunning],
   )
 
   if (!loaded) {
@@ -406,48 +426,79 @@ export function SettingsPage({ runtimeState, onRefreshConfig }: SettingsPageProp
           {/* Cards */}
           {settings.subscriptions.length > 0 && (
             <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
-              {settings.subscriptions.map((sub, index) => (
-                <div
-                  key={index}
-                  className="group relative rounded-xl border border-slate-200/80 bg-white/70 p-3.5 transition hover:border-slate-300 hover:bg-white/90 cursor-pointer"
-                  onClick={() => setEditingIndex(index)}
-                >
-                  {/* Header */}
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <h3 className="text-sm font-semibold text-slate-900 truncate">{sub.name}</h3>
-                    <div
-                      className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="rounded-md p-1 text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition"
-                        onClick={() => void refreshSubscription(index)}
-                        disabled={refreshingIndex === index}
-                        title="刷新"
+              {settings.subscriptions.map((sub, index) => {
+                const isActive = index === settings.activeIndex
+                const isActivating = index === activatingIndex
+                const isBusy = activatingIndex !== null
+                return (
+                  <div
+                    key={index}
+                    className={classNames(
+                      'group relative rounded-xl border p-3.5 transition',
+                      isActivating
+                        ? 'border-sky-400 bg-sky-50/60 opacity-70 cursor-wait'
+                        : isActive
+                          ? 'border-sky-400 bg-sky-50/60 shadow-sm cursor-pointer'
+                          : 'border-slate-200/80 bg-white/70 hover:border-slate-300 hover:bg-white/90 cursor-pointer',
+                      isBusy && !isActivating && 'pointer-events-none opacity-50',
+                    )}
+                    onClick={() => void activateSubscription(index)}
+                    onDoubleClick={() => setEditingIndex(index)}
+                  >
+                    {/* Header */}
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <h3 className={classNames(
+                        'text-sm font-semibold truncate',
+                        isActive ? 'text-sky-700' : 'text-slate-900',
+                      )}>
+                        {sub.name}
+                      </h3>
+                      <div
+                        className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                        onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
                       >
-                        <RefreshIcon className={classNames('h-3.5 w-3.5', refreshingIndex === index && 'animate-spin')} />
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
-                        onClick={() => removeSubscription(index)}
-                        title="删除"
-                      >
-                        <TrashIcon className="h-3.5 w-3.5" />
-                      </button>
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-slate-400 hover:text-slate-600 hover:bg-white/80 transition"
+                          onClick={() => setEditingIndex(index)}
+                          title="编辑"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-slate-400 hover:text-sky-600 hover:bg-sky-50 transition"
+                          onClick={() => void refreshSubscription(index)}
+                          disabled={refreshingIndex === index}
+                          title="刷新"
+                        >
+                          <RefreshCw className={classNames('h-3.5 w-3.5', refreshingIndex === index && 'animate-spin')} />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition"
+                          onClick={() => removeSubscription(index)}
+                          title="删除"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Domain */}
+                    <p className="text-xs text-slate-500 truncate mb-2">{extractDomain(sub.url)}</p>
+
+                    {/* Footer */}
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>{formatRelativeTime(sub.updatedAt)}</span>
+                      {isActivating
+                        ? <span className="text-amber-500 font-medium animate-pulse">切换中...</span>
+                        : isActive && <span className="text-sky-500 font-medium">使用中</span>}
                     </div>
                   </div>
-
-                  {/* Domain */}
-                  <p className="text-xs text-slate-500 truncate mb-2">{extractDomain(sub.url)}</p>
-
-                  {/* Footer */}
-                  <div className="flex items-center justify-between text-xs text-slate-400">
-                    <span>{formatRelativeTime(sub.updatedAt)}</span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

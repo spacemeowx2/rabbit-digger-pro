@@ -69,6 +69,7 @@ impl ApiServerArgs {
             access_token: self.access_token.clone(),
             web_ui: self.web_ui.clone(),
             source_sender: None,
+            log_file_path: None,
         }
     }
 }
@@ -168,6 +169,40 @@ async fn main() -> Result<()> {
             log_writer_filter.enabled(metadata, ctx.clone())
         }));
 
+    // In daemon mode, also log to a file
+    let is_daemon = matches!(
+        &args.cmd,
+        Some(Command::Service {
+            action: rabbit_digger_pro::service::ServiceAction::Run { .. }
+        })
+    );
+    let file_layer = if is_daemon {
+        let log_dir = dirs::data_local_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("rabbit_digger_pro");
+        std::fs::create_dir_all(&log_dir).ok();
+        let log_path = log_dir.join("daemon.log");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .expect("Failed to open daemon log file");
+        let file_filter = EnvFilter::new(
+            "rabbit_digger=info,rabbit_digger_pro=info,rd_std=info,raw=info,ss=info",
+        );
+        Some(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .with_filter(dynamic_filter_fn(move |metadata, ctx| {
+                    file_filter.enabled(metadata, ctx.clone())
+                })),
+        )
+    } else {
+        None
+    };
+
     tr.with(
         tracing_subscriber::fmt::layer()
             .with_writer(std::io::stdout)
@@ -176,6 +211,7 @@ async fn main() -> Result<()> {
             })),
     )
     .with(json_layer)
+    .with(file_layer)
     .init();
 
     match args.cmd {

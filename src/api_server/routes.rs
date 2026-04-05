@@ -64,6 +64,7 @@ impl ApiServer {
             cfg_mgr: self.config_manager.clone(),
             userdata: Arc::new(FileStorage::new(FolderType::Data, "userdata").await?),
             source_sender: self.source_sender.as_ref().map(|s| Arc::new(s.clone())),
+            log_file_path: self.log_file_path.clone(),
         };
 
         let mut router = Router::new()
@@ -71,14 +72,13 @@ impl ApiServer {
                 "/config",
                 get(handlers::get_config).post(handlers::post_config),
             )
-            .route("/get", get(handlers::get_registry))
-            .route("/state", get(handlers::get_state))
+            .route("/registry", get(handlers::get_registry))
             .route("/connection/{uuid}", delete(handlers::delete_conn))
             .route(
                 "/connection",
                 get(handlers::get_connections).delete(handlers::delete_connections),
             )
-            .route("/net/{net_name}", post(handlers::post_select))
+            .route("/net/{net_name}/select", post(handlers::post_select))
             .route("/net/{net_name}/delay", get(handlers::get_delay))
             .route(
                 "/userdata/{*path}",
@@ -88,7 +88,9 @@ impl ApiServer {
             )
             .route("/userdata", get(handlers::list_userdata))
             .route("/engine/stop", post(handlers::post_engine_stop))
-            .route("/stream/connection", get(handlers::get_connection))
+            .route("/logs", get(handlers::get_logs))
+            .route("/stream/events", get(handlers::sse_events))
+            .route("/stream/connections", get(handlers::get_connection))
             .route("/stream/logs", get(handlers::ws_log))
             .layer(Extension(ctx));
 

@@ -13,7 +13,7 @@ function getErrorMessage(error: unknown): string {
 export function useRdpDashboard() {
   const queryClient = useQueryClient()
 
-  // REST queries via TanStack Query
+  // Config via TanStack Query — SSE ConfigChanged invalidates this
   const { data: config = null } = useQuery<RdpConfig | null>({
     queryKey: ['config'],
     queryFn: async () => {
@@ -23,15 +23,11 @@ export function useRdpDashboard() {
         return null
       }
     },
-    refetchInterval: 10_000,
   })
 
-  const { data: runtimeState = 'Connecting' } = useQuery<string>({
-    queryKey: ['state'],
-    queryFn: () => rdpApi.getState(),
-    refetchInterval: 5_000,
-    retry: false,
-  })
+  // Engine status from Zustand (SSE-driven, no polling)
+  const engineStatus = useRdpStore((s) => s.engineStatus)
+  const runtimeState = engineStatus.status
 
   // Real-time data + UI state from Zustand
   const connections = useRdpStore((s) => s.connections)
@@ -47,13 +43,16 @@ export function useRdpDashboard() {
   const setClosingAll = useRdpStore((s) => s.setClosingAll)
   const clearLogs = useRdpStore((s) => s.clearLogs)
 
-  // Start WebSocket streams once, pass runtime state accessor
+  // Start streams once
   useEffect(() => {
-    startStreams(() => queryClient.getQueryData<string>(['state']) ?? 'Connecting')
-  }, [queryClient])
-
-  const refreshConfig = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ['config'] })
+    startStreams({
+      getRuntimeState: () => useRdpStore.getState().engineStatus.status,
+      invalidateQueries: (keys) => {
+        for (const key of keys) {
+          void queryClient.invalidateQueries({ queryKey: key })
+        }
+      },
+    })
   }, [queryClient])
 
   const selectNet = useCallback(
@@ -114,6 +113,7 @@ export function useRdpDashboard() {
 
   return {
     config,
+    engineStatus,
     runtimeState,
     connections,
     logs,
@@ -122,7 +122,6 @@ export function useRdpDashboard() {
     busyNet,
     busyConnectionId,
     closingAll,
-    refreshConfig,
     selectNet,
     closeConnection,
     closeAllConnections,

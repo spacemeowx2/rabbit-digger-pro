@@ -28,9 +28,6 @@ export const rdpApi = {
   getConfig() {
     return readJson<RdpConfig>('/api/config')
   },
-  getState() {
-    return readJson<string>('/api/state')
-  },
   getNetDelay(netName: string, url: string, timeout = 5000) {
     const params = new URLSearchParams({
       url,
@@ -41,7 +38,7 @@ export const rdpApi = {
     )
   },
   selectNet(netName: string, selected: string) {
-    return readJson<null>(`/api/net/${encodeURIComponent(netName)}`, {
+    return readJson<null>(`/api/net/${encodeURIComponent(netName)}/select`, {
       method: 'POST',
       body: JSON.stringify({ selected }),
     })
@@ -55,6 +52,9 @@ export const rdpApi = {
     return readJson<number>('/api/connection', {
       method: 'DELETE',
     })
+  },
+  getLogs(tail = 500) {
+    return readJson<Array<Record<string, unknown>>>(`/api/logs?tail=${tail}`)
   },
   applyConfig(source: Record<string, unknown>) {
     return readJson<null>('/api/config', {

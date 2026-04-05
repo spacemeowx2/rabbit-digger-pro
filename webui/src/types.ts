@@ -48,6 +48,17 @@ export interface TrafficSample {
   downloadRate: number
 }
 
+export interface ServerSnapshot {
+  name: string
+  server_type: string
+}
+
+export interface EngineStatus {
+  status: 'Idle' | 'Starting' | 'Running' | 'Stopping' | 'Error' | 'Connecting'
+  message?: string
+  servers?: ServerSnapshot[]
+}
+
 export interface DelayResponse {
   connect: number
   response: number

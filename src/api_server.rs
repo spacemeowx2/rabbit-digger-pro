@@ -20,6 +20,8 @@ pub struct ApiServer {
     /// When set, POST /api/config sends ImportSource through this channel
     /// instead of spawning start_stream directly.
     pub source_sender: Option<mpsc::Sender<ImportSource>>,
+    /// Path to the daemon log file (JSON lines), for GET /api/logs.
+    pub log_file_path: Option<std::path::PathBuf>,
 }
 
 impl ApiServer {
@@ -66,6 +68,7 @@ mod tests {
             access_token: None,
             web_ui: None,
             source_sender: None,
+            log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -84,18 +87,11 @@ mod tests {
             client.get(&url).send().await.unwrap()
         }
 
-        let r = get_until_ok(&client, format!("{base}/api/get")).await;
+        let r = get_until_ok(&client, format!("{base}/api/registry")).await;
         if !r.status().is_success() {
             let status = r.status();
             let body = r.text().await.unwrap_or_default();
-            panic!("/api/get status={status} body={body}");
-        }
-
-        let r = get_until_ok(&client, format!("{base}/api/state")).await;
-        if !r.status().is_success() {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            panic!("/api/state status={status} body={body}");
+            panic!("/api/registry status={status} body={body}");
         }
 
         let r = get_until_ok(&client, format!("{base}/api/config")).await;
@@ -173,6 +169,7 @@ mod tests {
             access_token: None,
             web_ui: Some(tmp.path().to_string_lossy().to_string()),
             source_sender: None,
+            log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -210,6 +207,7 @@ mod tests {
             access_token: Some("secret".to_string()),
             web_ui: None,
             source_sender: None,
+            log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -217,14 +215,14 @@ mod tests {
         let client = test_http_client();
 
         let r = client
-            .get(format!("{base}/api/state"))
+            .get(format!("{base}/api/registry"))
             .send()
             .await
             .unwrap();
         assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         let r = client
-            .get(format!("{base}/api/state"))
+            .get(format!("{base}/api/registry"))
             .header(reqwest::header::AUTHORIZATION, "secret")
             .send()
             .await
@@ -255,6 +253,7 @@ mod tests {
             access_token: None,
             web_ui: None,
             source_sender: None,
+            log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
         let base = format!("http://{addr}");
@@ -264,16 +263,8 @@ mod tests {
 
         // Wait for rd to be fully running.
         for _ in 0..100 {
-            let r = client
-                .get(format!("{base}/api/state"))
-                .send()
-                .await
-                .unwrap();
-            if r.status().is_success() {
-                let v: Value = r.json().await.unwrap();
-                if v.as_str() == Some("Running") {
-                    break;
-                }
+            if app.rd.is_running().await {
+                break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -284,7 +275,7 @@ mod tests {
 
         // post_select (should be ok even if net isn't select)
         let r = client
-            .post(format!("{base}/api/net/local"))
+            .post(format!("{base}/api/net/local/select"))
             .json(&serde_json::json!({"selected": "local"}))
             .send()
             .await
@@ -307,7 +298,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(r.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
         let v: Value = r.json().await.unwrap();
         assert_eq!(v.get("error").and_then(|s| s.as_str()), Some("Not found"));
 
@@ -342,7 +333,7 @@ mod tests {
 
         // WebSocket: connection stream
         let (mut ws, _) = connect_async(format!(
-            "{ws_base}/api/stream/connection?patch=true&without_connections=true"
+            "{ws_base}/api/stream/connections?patch=true&without_connections=true"
         ))
         .await
         .unwrap();

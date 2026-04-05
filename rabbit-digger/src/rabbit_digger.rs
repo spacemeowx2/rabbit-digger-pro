@@ -7,7 +7,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context, Result};
 use futures::{
-    future::{try_select, Either},
+    future::{select, Either},
     stream::FuturesUnordered,
     Stream, StreamExt, TryStreamExt,
 };
@@ -18,9 +18,10 @@ use rd_interface::{
     registry::NetGetter,
     Arc, Error, IntoDyn, Net, Server, Value,
 };
+use serde::Serialize;
 use tokio::{
     pin,
-    sync::RwLock,
+    sync::{broadcast, RwLock},
     task::{yield_now, JoinError},
     time::timeout,
 };
@@ -31,6 +32,35 @@ use self::connection_manager::{ConnectionManager, ConnectionState};
 mod connection_manager;
 mod event;
 mod running;
+
+/// Per-server runtime info.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ServerSnapshot {
+    pub name: String,
+    pub server_type: String,
+}
+
+/// Engine status — the single source of truth, broadcast via SSE.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status")]
+pub enum EngineStatus {
+    Idle,
+    Starting { message: String },
+    Running { servers: Vec<ServerSnapshot> },
+    Stopping,
+    Error { message: String },
+}
+
+/// Events broadcast to subscribers (SSE, etc).
+/// Each variant represents a type of data change.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event")]
+pub enum ServerEvent {
+    /// Engine status changed — carries the new status inline.
+    StatusChanged { status: EngineStatus },
+    /// Config was applied — frontend should refetch config.
+    ConfigChanged,
+}
 
 struct RunningEntities {
     nets: BTreeMap<String, Arc<RunningNet>>,
@@ -66,6 +96,8 @@ impl State {
 struct Inner {
     state: RwLock<State>,
     conn_mgr: ConnectionManager,
+    event_tx: broadcast::Sender<ServerEvent>,
+    current_status: std::sync::RwLock<EngineStatus>,
 }
 
 impl Drop for Inner {
@@ -89,10 +121,13 @@ impl fmt::Debug for RabbitDigger {
 impl RabbitDigger {
     pub async fn new(registry: Registry) -> Result<RabbitDigger> {
         let manager = ConnectionManager::new();
+        let (event_tx, _) = broadcast::channel(64);
 
         let inner = Inner {
             state: RwLock::new(State::WaitConfig),
             conn_mgr: manager,
+            event_tx,
+            current_status: std::sync::RwLock::new(EngineStatus::Idle),
         };
 
         Ok(RabbitDigger {
@@ -100,65 +135,91 @@ impl RabbitDigger {
             registry: Arc::new(registry),
         })
     }
+    fn set_status(&self, status: EngineStatus) {
+        *self.inner.current_status.write().unwrap() = status.clone();
+        self.emit(ServerEvent::StatusChanged { status });
+    }
+
+    fn emit(&self, event: ServerEvent) {
+        let _ = self.inner.event_tx.send(event);
+    }
+
+    /// Get the current engine status.
+    pub fn status(&self) -> EngineStatus {
+        self.inner.current_status.read().unwrap().clone()
+    }
+
+    /// Subscribe to server events. Every event is delivered in order.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ServerEvent> {
+        self.inner.event_tx.subscribe()
+    }
+
+    /// Abort all running servers and transition to `WaitConfig`.
     pub async fn stop(&self) -> Result<()> {
         let inner = &self.inner;
-        let state = inner.state.read().await;
 
-        match &*state {
-            State::Running(Running {
+        // Abort all servers (read lock — non-exclusive)
+        {
+            let state = inner.state.read().await;
+            if let State::Running(Running {
                 entities: RunningEntities { servers, .. },
                 ..
-            }) => {
+            }) = &*state
+            {
+                self.set_status(EngineStatus::Stopping);
                 for i in servers.values() {
                     i.running_server.stop().await?;
                 }
             }
-            _ => {}
-        };
-        // release the lock to allow other join tasks to write the state
-        drop(state);
+        }
 
-        self.join().await?;
+        // Collect results and transition to WaitConfig
+        self.drain().await;
 
         Ok(())
     }
-    pub async fn join(&self) -> Result<()> {
+
+    /// Wait until any server exits. Does NOT change state.
+    /// Safe to race against a config stream in `start_stream`.
+    pub async fn wait_any_exit(&self) {
         let inner = &self.inner;
+        let state = inner.state.read().await;
 
-        match &*inner.state.read().await {
-            State::WaitConfig => return Ok(()),
-            State::Running(Running {
-                entities: RunningEntities { servers, .. },
-                ..
-            }) => {
-                let mut race = FuturesUnordered::new();
-                for (name, i) in servers {
-                    race.push(async move {
-                        i.running_server.join().await;
-                        if let Some(result) = i.running_server.take_result().await {
-                            (name, result)
-                        } else {
-                            tracing::warn!("Failed to take result. This shouldn't happend");
-                            (name, Ok(()))
-                        }
-                    });
-                }
+        if let State::Running(Running {
+            entities: RunningEntities { servers, .. },
+            ..
+        }) = &*state
+        {
+            let mut race = FuturesUnordered::new();
+            for i in servers.values() {
+                race.push(i.running_server.wait_finished());
+            }
+            // Return as soon as the first server exits
+            race.next().await;
+        }
+    }
 
-                while let Some((name, r)) = race.next().await {
-                    match r {
-                        Err(e) if !e.is::<JoinError>() => {
-                            tracing::warn!("Server {} stopped with error: {:?}", name, e);
-                        }
-                        _ => {}
+    /// Collect results from all servers, log errors, and transition to `WaitConfig`.
+    async fn drain(&self) {
+        let inner = &self.inner;
+        let mut state = inner.state.write().await;
+
+        if let State::Running(Running {
+            entities: RunningEntities { servers, .. },
+            ..
+        }) = &*state
+        {
+            for (name, info) in servers {
+                if let Some(Err(e)) = info.running_server.take_result().await {
+                    if !e.is::<JoinError>() {
+                        tracing::warn!("Server {} stopped with error: {:?}", name, e);
                     }
                 }
             }
-        };
+        }
 
-        let state = &mut *inner.state.write().await;
         *state = State::WaitConfig;
-
-        Ok(())
+        self.set_status(EngineStatus::Idle);
     }
 
     // get current connection state
@@ -167,15 +228,6 @@ impl RabbitDigger {
         F: FnOnce(&ConnectionState) -> R,
     {
         self.inner.conn_mgr.borrow_state(f)
-    }
-
-    // get state
-    pub async fn state_str(&self) -> Result<&'static str> {
-        let state = self.inner.state.read().await;
-        Ok(match &*state {
-            State::WaitConfig => "WaitConfig",
-            State::Running { .. } => "Running",
-        })
     }
 
     // get registry schema
@@ -190,6 +242,9 @@ impl RabbitDigger {
     pub async fn start(&self, mut config: config::Config) -> Result<()> {
         let inner = &self.inner;
 
+        self.set_status(EngineStatus::Starting {
+            message: "Building config...".into(),
+        });
         tracing::debug!("Registry:\n{}", self.registry);
 
         let entities = self
@@ -211,6 +266,15 @@ impl RabbitDigger {
             running_server.start().await?;
         }
 
+        let servers: Vec<ServerSnapshot> = entities
+            .servers
+            .iter()
+            .map(|(name, info)| ServerSnapshot {
+                name: name.clone(),
+                server_type: info.running_server.server_type().to_string(),
+            })
+            .collect();
+
         *state = State::Running(Running {
             config: RwLock::new(SerializedConfig {
                 all_fields: serialize_with_fields(ALL_SERIALIZE_FIELDS.to_vec(), || {
@@ -221,6 +285,8 @@ impl RabbitDigger {
             }),
             entities,
         });
+        self.set_status(EngineStatus::Running { servers });
+        self.emit(ServerEvent::ConfigChanged);
 
         Ok(())
     }
@@ -248,26 +314,34 @@ impl RabbitDigger {
         let reason = loop {
             tracing::info!("rabbit digger is starting...");
 
-            self.start(config).await?;
+            if let Err(e) = self.start(config).await {
+                self.set_status(EngineStatus::Error {
+                    message: format!("{e:#}"),
+                });
+                tracing::error!("Failed to start: {e:?}, waiting for next config...");
+                config = match config_stream.try_next().await {
+                    Ok(Some(v)) => v,
+                    Ok(None) => break Ok(()),
+                    Err(e) => break Err(e),
+                };
+                continue;
+            }
 
             let new_config = {
-                let join_fut = self.join();
-                pin!(join_fut);
+                let wait_fut = self.wait_any_exit();
+                pin!(wait_fut);
+                let cfg_fut = config_stream.try_next();
+                pin!(cfg_fut);
 
-                match try_select(join_fut, config_stream.try_next()).await {
-                    Ok(Either::Left((_, cfg_fut))) => {
-                        tracing::info!("Exited normally, waiting for next config...");
+                match select(wait_fut, cfg_fut).await {
+                    // A server exited first — drain and wait for next config
+                    Either::Left(((), cfg_fut)) => {
+                        tracing::info!("Server exited, waiting for next config...");
+                        self.drain().await;
                         cfg_fut.await
                     }
-                    Ok(Either::Right((cfg, _))) => Ok(cfg),
-                    Err(Either::Left((e, cfg_fut))) => {
-                        tracing::error!(
-                            "Rabbit digger went to error: {:?}, waiting for next config...",
-                            e
-                        );
-                        cfg_fut.await
-                    }
-                    Err(Either::Right((e, _))) => Err(e),
+                    // New config arrived first
+                    Either::Right((cfg, _)) => cfg,
                 }
             };
 

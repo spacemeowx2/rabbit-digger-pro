@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { applyPatch, type Operation } from 'fast-json-patch'
 
-import { getWebSocketUrl } from './api'
-import type { ConnectionSnapshot, LogEntry, TrafficSample } from './types'
+import { getWebSocketUrl, rdpApi } from './api'
+import type { ConnectionSnapshot, EngineStatus, LogEntry, TrafficSample } from './types'
 import { parseLogChunk } from './utils'
 
 // ---------------------------------------------------------------------------
@@ -16,6 +16,9 @@ const EMPTY_CONNECTIONS: ConnectionSnapshot = {
 }
 
 interface RdpStore {
+  // Engine status (SSE-driven)
+  engineStatus: EngineStatus
+
   // Real-time data (WebSocket-driven)
   connections: ConnectionSnapshot
   logs: LogEntry[]
@@ -40,6 +43,7 @@ interface RdpStore {
 // ---------------------------------------------------------------------------
 
 export const useRdpStore = create<RdpStore>((set) => ({
+  engineStatus: { status: 'Connecting' as const, servers: [] },
   connections: EMPTY_CONNECTIONS,
   logs: [],
   trafficHistory: [],
@@ -111,12 +115,58 @@ function connectWebSocket(path: string, onMessage: (data: string) => void) {
 
 let streamsStarted = false
 
-export function startStreams(getRuntimeState: () => string) {
+interface StreamDeps {
+  getRuntimeState: () => string
+  invalidateQueries: (keys: string[][]) => void
+}
+
+interface ServerEvent {
+  event: string
+  status?: EngineStatus
+}
+
+function connectSSE(deps: StreamDeps) {
+  let source: EventSource | null = null
+
+  const connect = () => {
+    source = new EventSource('/api/stream/events')
+
+    source.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data) as ServerEvent
+        switch (data.event) {
+          case 'StatusChanged':
+            if (data.status) {
+              useRdpStore.setState({ engineStatus: data.status })
+            }
+            break
+          case 'ConfigChanged':
+            deps.invalidateQueries([['config']])
+            break
+        }
+      } catch {
+        // ignore malformed events
+      }
+    }
+
+    source.onerror = () => {
+      source?.close()
+      window.setTimeout(connect, 1500)
+    }
+  }
+
+  connect()
+}
+
+export function startStreams(deps: StreamDeps) {
   if (streamsStarted) return
   streamsStarted = true
 
+  // SSE for engine status changes → invalidate queries
+  connectSSE(deps)
+
   // Connection stream
-  connectWebSocket('/api/stream/connection?patch=true', (data) => {
+  connectWebSocket('/api/stream/connections?patch=true', (data) => {
     try {
       const payload = JSON.parse(data) as
         | { full?: ConnectionSnapshot; patch?: Operation[] }
@@ -137,8 +187,7 @@ export function startStreams(getRuntimeState: () => string) {
         'full' in payload && payload.full ? payload.full : (payload as ConnectionSnapshot)
       applyConnectionSnapshot(snapshot)
     } catch (caught) {
-      // Only surface errors when engine is actually running
-      if (getRuntimeState() === 'Running') {
+      if (deps.getRuntimeState() === 'Running') {
         useRdpStore.getState().setError(
           caught instanceof Error ? caught.message : 'Unknown error',
         )
@@ -146,7 +195,37 @@ export function startStreams(getRuntimeState: () => string) {
     }
   })
 
-  // Log stream
+  // Load historical logs from file, then connect WebSocket for live stream
+  rdpApi.getLogs(500).then((entries) => {
+    const historicalLogs: LogEntry[] = entries.map((entry, i) => {
+      const parsed = entry as {
+        timestamp?: string
+        level?: string
+        fields?: Record<string, unknown>
+        target?: string
+        span?: Record<string, unknown>
+        spans?: Array<Record<string, unknown>>
+      }
+      return {
+        id: `hist-${i}`,
+        time: parsed.timestamp ?? null,
+        level: parsed.level ?? 'LOG',
+        message: (parsed.fields?.message as string) ?? JSON.stringify(entry),
+        raw: JSON.stringify(entry),
+        target: parsed.target ?? null,
+        fields: parsed.fields ?? null,
+        span: parsed.span ?? null,
+        spans: parsed.spans ?? null,
+      }
+    })
+    if (historicalLogs.length > 0) {
+      useRdpStore.setState({ logs: historicalLogs })
+    }
+  }).catch(() => {
+    // No log file available (non-daemon mode), that's fine
+  })
+
+  // Live log stream (appends after historical)
   connectWebSocket('/api/stream/logs', (data) => {
     const nextLines = parseLogChunk(data)
     if (nextLines.length > 0) {
