@@ -35,7 +35,7 @@ const DEFAULT_SETTINGS: DaemonSettings = {
   port: 10800,
   tunEnabled: false,
   tunDnsMode: 'fake-ip',
-  tunIp: '198.18.0.1/15',
+  tunIp: '10.0.0.1/24',
   tunMtu: 1400,
 }
 

@@ -42,10 +42,15 @@ impl Default for DnsMode {
 
 #[rd_config]
 pub struct TunServerConfig {
-    /// TUN device name (e.g. "utun100")
+    /// TUN device name (e.g. "utun100" on macOS, "tun-rdp" on Linux)
     pub device: String,
-    /// IP CIDR for the TUN interface (e.g. "198.18.0.1/15")
+    /// IP CIDR for the TUN interface itself (e.g. "10.0.0.1/24").
+    /// This is the address assigned to the TUN device, not the fake-ip range.
+    #[serde(default = "default_tun_ip")]
     pub ip_addr: String,
+    /// Fake-IP pool CIDR range (e.g. "198.18.0.0/15"). Only used in fake-ip mode.
+    #[serde(default = "default_fake_ip_range")]
+    pub fake_ip_range: String,
     /// MTU (default 1500)
     #[serde(default = "default_mtu")]
     pub mtu: u16,
@@ -59,6 +64,14 @@ pub struct TunServerConfig {
     /// Proxy server IPs to bypass TUN (prevent routing loop)
     #[serde(default)]
     pub bypass_ips: Vec<String>,
+}
+
+fn default_tun_ip() -> String {
+    "10.0.0.1/24".to_string()
+}
+
+fn default_fake_ip_range() -> String {
+    "198.18.0.0/15".to_string()
 }
 
 fn default_mtu() -> u16 {
@@ -75,7 +88,7 @@ impl IServer for TunServer {
     async fn start(&self) -> Result<()> {
         let config = &self.config;
 
-        // Parse IP config
+        // Parse TUN interface IP (small subnet for the device itself)
         let ip_cidr = IpCidr::from_str(&config.ip_addr)
             .map_err(|_| rd_interface::Error::other("Invalid ip_addr"))?;
         let ip_addr = match IpAddr::from(ip_cidr.address()) {
@@ -83,6 +96,9 @@ impl IServer for TunServer {
             _ => return Err(rd_interface::Error::other("TUN only supports IPv4")),
         };
         let gateway = ip_addr;
+
+        // Fake-IP range is separate from TUN interface IP
+        let _fake_ip_range = &config.fake_ip_range;
 
         // Create TUN device
         let raw_config = crate::config::RawNetConfig {
@@ -107,9 +123,12 @@ impl IServer for TunServer {
             GatewayDevice::new(tun_device, ethernet_addr, 65536, ip_cidr, override_addr);
         let map = gw_device.get_map();
 
+        // TUN is always L3 (IP), not L2 (Ethernet)
+        let hw_addr = HardwareAddress::Ip;
+
         let gw_ip = IpAddress::from_str(&gateway.to_string()).ok();
         let mut net_config = NetConfig::new(
-            IfaceConfig::new(HardwareAddress::Ethernet(ethernet_addr)),
+            IfaceConfig::new(hw_addr),
             ip_cidr,
             gw_ip.into_iter().collect(),
         );
@@ -153,8 +172,8 @@ impl IServer for TunServer {
             config.dns_mode
         );
 
-        // Initialize fake IP pool (only used in fake-ip mode, but cheap to create)
-        let fake_ip = Arc::new(FakeIpPool::new(&config.ip_addr));
+        // Initialize fake IP pool from the dedicated range (not the TUN interface IP)
+        let fake_ip = Arc::new(FakeIpPool::new(&config.fake_ip_range));
 
         // Bind listeners
         let tcp_listener = smoltcp_net
