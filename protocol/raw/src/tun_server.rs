@@ -26,10 +26,11 @@ use crate::{
 };
 
 #[rd_config]
-#[serde(rename_all = "lowercase")]
 #[derive(Debug, Clone, Copy)]
 pub enum DnsMode {
+    #[serde(rename = "fake-ip")]
     FakeIp,
+    #[serde(rename = "redir-host")]
     RedirHost,
 }
 
