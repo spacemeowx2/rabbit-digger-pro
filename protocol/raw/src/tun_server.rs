@@ -23,7 +23,7 @@ use crate::{
     fake_ip::{generate_fake_response, FakeIpPool},
     forward::source,
     gateway::{GatewayDevice, MapTable},
-    route_setup::{RouteSetupConfig, RouteState},
+    route_setup::{self, RouteSetupConfig},
 };
 
 #[rd_config]
@@ -152,16 +152,21 @@ impl IServer for TunServer {
         };
         let smoltcp_net = Arc::new(SmoltcpNet::new(gw_device, net_config));
 
-        // 3. Set up system routes.
-        //    Linux: policy routing with fwmark (not fwmark → TUN table)
-        //    macOS: route replace + scoped fallback
-        let _route_state = RouteState::setup(RouteSetupConfig {
-            tun_name: config.device.clone(),
-            tun_gateway: gateway.to_string(),
-            fwmark: config.fwmark,
-            dns_ip: gateway.to_string(),
-        })
-        .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
+        // 3. Set up system routes via SideEffectManager (from EngineContext).
+        //    All route changes are registered for automatic rollback.
+        {
+            let mut mgr = ctx.side_effects.lock().await;
+            route_setup::setup_routes(
+                &mut mgr,
+                &RouteSetupConfig {
+                    tun_name: config.device.clone(),
+                    tun_gateway: gateway.to_string(),
+                    fwmark: config.fwmark,
+                    dns_ip: gateway.to_string(),
+                },
+            )
+            .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
+        }
 
         tracing::info!(
             "TUN global mode active: device={}, dns={:?}",

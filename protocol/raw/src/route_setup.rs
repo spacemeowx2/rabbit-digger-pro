@@ -1,44 +1,14 @@
 //! System route setup for TUN global mode.
 //!
-//! Linux: policy routing with fwmark (clash-rs style)
-//!   - TUN default route in a dedicated table
-//!   - `ip rule add not fwmark <mark> table <tun_table>` → unmarked packets go through TUN
-//!   - `ip rule add table main suppress_prefixlength 0` → marked packets use main table
-//!
-//! macOS: route commands
-//!   - Replace default route with TUN gateway
-//!   - Scoped route back to original gateway for marked traffic
+//! All side effects are registered with the SideEffectManager so they
+//! get rolled back on normal shutdown (Drop) or crash recovery.
 
 use std::process::Command;
 
-use tracing::{debug, info, warn};
+use rd_interface::side_effect::{SideEffectManager, SideEffectUndo};
+use tracing::debug;
 
 const TUN_TABLE: &str = "2468";
-
-pub struct RouteState {
-    tun_name: String,
-    fwmark: u32,
-    #[allow(dead_code)]
-    original_dns: Option<String>,
-    platform: PlatformState,
-}
-
-enum PlatformState {
-    #[cfg(target_os = "linux")]
-    Linux {
-        original_gateway: Option<String>,
-        dns_modified: bool,
-    },
-    #[cfg(target_os = "macos")]
-    Macos {
-        original_gateway: String,
-        original_interface: String,
-        network_service: String,
-        original_dns: Vec<String>,
-    },
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    Unsupported,
-}
 
 pub struct RouteSetupConfig {
     pub tun_name: String,
@@ -47,47 +17,40 @@ pub struct RouteSetupConfig {
     pub dns_ip: String,
 }
 
-impl RouteState {
-    pub fn setup(config: RouteSetupConfig) -> Result<Self, String> {
-        #[cfg(target_os = "linux")]
-        let platform = setup_linux(&config)?;
-        #[cfg(target_os = "macos")]
-        let platform = setup_macos(&config)?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let platform = {
-            let _ = &config;
-            PlatformState::Unsupported
-        };
+/// Set up system routes for TUN global mode.
+/// All side effects are registered in the manager for automatic rollback.
+pub fn setup_routes(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    setup_linux(mgr, config)?;
+    #[cfg(target_os = "macos")]
+    setup_macos(mgr, config)?;
 
-        info!("Routes configured for TUN {}", config.tun_name);
+    Ok(())
+}
 
-        Ok(RouteState {
-            tun_name: config.tun_name,
-            fwmark: config.fwmark,
-            original_dns: None,
-            platform,
-        })
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn cmd_undo(cmd: &str, args: &[&str]) -> SideEffectUndo {
+    SideEffectUndo::Command {
+        cmd: cmd.to_string(),
+        args: args.iter().map(|s| s.to_string()).collect(),
     }
 }
 
-impl Drop for RouteState {
-    fn drop(&mut self) {
-        if let Err(e) = self.teardown() {
-            warn!("Route cleanup failed: {e}");
-        }
-    }
-}
+fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
+    debug!("Running: {cmd} {}", args.join(" "));
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
 
-impl RouteState {
-    fn teardown(&mut self) -> Result<(), String> {
-        #[cfg(target_os = "linux")]
-        teardown_linux(&self.tun_name, self.fwmark, &mut self.platform)?;
-        #[cfg(target_os = "macos")]
-        teardown_macos(&mut self.platform)?;
-
-        info!("Routes cleaned up");
-        Ok(())
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{cmd} {}: {}", args.join(" "), stderr.trim()));
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -95,139 +58,110 @@ impl RouteState {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-fn setup_linux(config: &RouteSetupConfig) -> Result<PlatformState, String> {
-    // Save original default gateway
-    let original_gateway = get_default_gateway_linux();
-    debug!("Original gateway: {:?}", original_gateway);
-
-    // 1. Add default route to TUN in dedicated table
-    run(
-        "ip",
-        &[
-            "route",
-            "add",
-            "default",
-            "dev",
-            &config.tun_name,
-            "table",
-            TUN_TABLE,
-        ],
-    )?;
-
+fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
     let mark_str = config.fwmark.to_string();
 
-    // Priority order matters for response packets (which have no fwmark):
-    //
-    // 100: suppress_prefixlength 0 → main table specific routes (e.g. eth0 LAN)
-    //      Response packets from the real server match eth0's subnet route here.
-    // 200: not fwmark → TUN table (catches new outbound connections without mark)
-    // 201: DNS hijack → TUN table
-    //
-    // Packets WITH fwmark skip rule 200 (fwmark matches, "not fwmark" fails),
-    // fall through to 32766 (main table) → default gateway via eth0.
-
-    // 2. Suppress: specific routes in main table (for response packets on eth0)
-    run(
-        "ip",
-        &[
-            "rule",
-            "add",
-            "table",
-            "main",
-            "suppress_prefixlength",
-            "0",
-            "priority",
-            "100",
-        ],
+    // 1. TUN default route in dedicated table
+    mgr.apply(
+        format!(
+            "ip route add default dev {} table {TUN_TABLE}",
+            config.tun_name
+        ),
+        || {
+            run(
+                "ip",
+                &[
+                    "route",
+                    "add",
+                    "default",
+                    "dev",
+                    &config.tun_name,
+                    "table",
+                    TUN_TABLE,
+                ],
+            )
+        },
+        cmd_undo(
+            "ip",
+            &[
+                "route",
+                "del",
+                "default",
+                "dev",
+                &config.tun_name,
+                "table",
+                TUN_TABLE,
+            ],
+        ),
     )?;
 
-    // 3. Rule: packets WITHOUT fwmark → use TUN table
-    run(
-        "ip",
-        &[
-            "rule", "add", "not", "fwmark", &mark_str, "table", TUN_TABLE, "priority", "200",
-        ],
+    // 2. suppress_prefixlength 0 (priority 100) — lets response packets
+    //    match specific routes in main table (e.g. eth0 LAN subnet)
+    mgr.apply(
+        "ip rule add table main suppress_prefixlength 0 priority 100",
+        || {
+            run(
+                "ip",
+                &[
+                    "rule",
+                    "add",
+                    "table",
+                    "main",
+                    "suppress_prefixlength",
+                    "0",
+                    "priority",
+                    "100",
+                ],
+            )
+        },
+        cmd_undo("ip", &["rule", "del", "priority", "100"]),
     )?;
 
-    // 4. DNS hijack: port 53 always goes through TUN table
-    let _ = run(
-        "ip",
-        &[
-            "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "201",
-        ],
+    // 3. not fwmark → TUN table (priority 200) — unmarked outbound goes through TUN
+    mgr.apply(
+        format!("ip rule add not fwmark {mark_str} table {TUN_TABLE} priority 200"),
+        || {
+            run(
+                "ip",
+                &[
+                    "rule", "add", "not", "fwmark", &mark_str, "table", TUN_TABLE, "priority",
+                    "200",
+                ],
+            )
+        },
+        cmd_undo("ip", &["rule", "del", "priority", "200"]),
+    )?;
+
+    // 4. DNS hijack (priority 201) — port 53 always goes through TUN
+    let _ = mgr.apply(
+        format!("ip rule add dport 53 table {TUN_TABLE} priority 201"),
+        || {
+            run(
+                "ip",
+                &[
+                    "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "201",
+                ],
+            )
+        },
+        cmd_undo("ip", &["rule", "del", "priority", "201"]),
     );
 
     // 5. Set DNS
-    let dns_modified = set_dns_linux(&config.dns_ip);
-
-    Ok(PlatformState::Linux {
-        original_gateway,
-        dns_modified,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn teardown_linux(tun_name: &str, fwmark: u32, platform: &mut PlatformState) -> Result<(), String> {
-    let PlatformState::Linux {
-        original_gateway: _,
-        dns_modified,
-    } = platform
-    else {
-        return Ok(());
-    };
-
-    // Remove rules by priority (ignore errors — might already be gone)
-    let _ = run("ip", &["rule", "del", "priority", "200"]);
-    let _ = run("ip", &["rule", "del", "priority", "101"]);
-    let _ = run("ip", &["rule", "del", "priority", "100"]);
-
-    // Remove TUN route from dedicated table
-    let _ = run(
-        "ip",
-        &[
-            "route", "del", "default", "dev", tun_name, "table", TUN_TABLE,
-        ],
+    let original_dns = std::fs::read_to_string("/etc/resolv.conf").ok();
+    let content = format!("nameserver {}\n", config.dns_ip);
+    let _ = mgr.apply(
+        format!("Set DNS to {}", config.dns_ip),
+        || {
+            std::fs::write("/etc/resolv.conf", &content)
+                .map_err(|e| format!("write resolv.conf: {e}"))
+        },
+        SideEffectUndo::WriteFile {
+            path: "/etc/resolv.conf".to_string(),
+            content: original_dns.unwrap_or_else(|| "nameserver 1.1.1.1\n".to_string()),
+        },
     );
 
-    // Restore DNS
-    if *dns_modified {
-        restore_dns_linux();
-    }
-
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn get_default_gateway_linux() -> Option<String> {
-    let output = Command::new("ip")
-        .args(["route", "show", "default"])
-        .output()
-        .ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // "default via 192.168.1.1 dev eth0 ..."
-    stdout.split_whitespace().nth(2).map(String::from)
-}
-
-#[cfg(target_os = "linux")]
-fn set_dns_linux(dns_ip: &str) -> bool {
-    let content = format!("nameserver {dns_ip}\n");
-    match std::fs::write("/etc/resolv.conf", &content) {
-        Ok(_) => {
-            debug!("Set DNS to {dns_ip}");
-            true
-        }
-        Err(e) => {
-            warn!("Failed to set DNS: {e}");
-            false
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn restore_dns_linux() {
-    // Best effort: set to a reasonable default
-    let _ = std::fs::write("/etc/resolv.conf", "nameserver 1.1.1.1\n");
-    debug!("Restored DNS to default");
 }
 
 // ---------------------------------------------------------------------------
@@ -235,82 +169,76 @@ fn restore_dns_linux() {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
-fn setup_macos(config: &RouteSetupConfig) -> Result<PlatformState, String> {
-    // Get original default gateway and interface
+fn setup_macos(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
     let (gw, iface) = get_default_route_macos()?;
     debug!("Original gateway: {gw} via {iface}");
 
-    // Get network service name for DNS changes
     let service = get_network_service_macos(&iface).unwrap_or_else(|| "Wi-Fi".to_string());
     debug!("Network service: {service}");
 
-    // Save original DNS
     let original_dns = get_dns_macos(&service);
 
-    // 1. Delete existing default route
-    let _ = run("route", &["delete", "default"]);
-
-    // 2. Add default route through TUN
-    run(
-        "route",
-        &[
-            "add",
-            "default",
-            &config.tun_gateway,
-            "-interface",
-            &config.tun_name,
-        ],
+    // 1. Delete existing default route (undo: restore it)
+    mgr.apply(
+        "route delete default",
+        || {
+            let _ = run("route", &["delete", "default"]);
+            Ok(()) // always succeed — might not exist
+        },
+        cmd_undo("route", &["add", "default", &gw]),
     )?;
 
-    // 3. Add scoped route to original gateway (so marked/bound traffic can still exit)
-    let _ = run("route", &["add", "default", &gw, "-ifscope", &iface]);
+    // 2. Add default route through TUN (undo: delete it)
+    mgr.apply(
+        format!(
+            "route add default {} -interface {}",
+            config.tun_gateway, config.tun_name
+        ),
+        || {
+            run(
+                "route",
+                &[
+                    "add",
+                    "default",
+                    &config.tun_gateway,
+                    "-interface",
+                    &config.tun_name,
+                ],
+            )
+        },
+        cmd_undo("route", &["delete", "default"]),
+    )?;
 
-    // 4. Set DNS
-    let mut dns_args = vec!["-setdnsservers", &service, &config.dns_ip];
-    let _ = run("networksetup", &dns_args);
-
-    Ok(PlatformState::Macos {
-        original_gateway: gw,
-        original_interface: iface,
-        network_service: service,
-        original_dns,
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn teardown_macos(platform: &mut PlatformState) -> Result<(), String> {
-    let PlatformState::Macos {
-        original_gateway,
-        original_interface,
-        network_service,
-        original_dns,
-    } = platform
-    else {
-        return Ok(());
-    };
-
-    // Restore default route
-    let _ = run("route", &["delete", "default"]);
-    let _ = run("route", &["add", "default", original_gateway]);
-
-    // Remove scoped route
-    let _ = run(
-        "route",
-        &["delete", "default", "-ifscope", original_interface],
+    // 3. Scoped route to original gateway (undo: delete it)
+    let _ = mgr.apply(
+        format!("route add default {gw} -ifscope {iface}"),
+        || run("route", &["add", "default", &gw, "-ifscope", &iface]),
+        cmd_undo("route", &["delete", "default", "-ifscope", &iface]),
     );
 
-    // Restore DNS
-    if original_dns.is_empty() {
-        let _ = run(
-            "networksetup",
-            &["-setdnsservers", network_service, "Empty"],
-        );
-    } else {
-        let mut args = vec!["-setdnsservers".to_string(), network_service.clone()];
-        args.extend(original_dns.iter().cloned());
-        let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let _ = run("networksetup", &args_ref);
-    }
+    // 4. Set DNS (undo: restore original)
+    let _ = mgr.apply(
+        format!("networksetup -setdnsservers {service} {}", config.dns_ip),
+        || {
+            run(
+                "networksetup",
+                &["-setdnsservers", &service, &config.dns_ip],
+            )
+        },
+        if original_dns.is_empty() {
+            cmd_undo("networksetup", &["-setdnsservers", &service, "Empty"])
+        } else {
+            let mut args = vec!["-setdnsservers", &service];
+            // Can't borrow original_dns items in cmd_undo, build full args
+            SideEffectUndo::Command {
+                cmd: "networksetup".to_string(),
+                args: std::iter::once("-setdnsservers".to_string())
+                    .chain(std::iter::once(service.clone()))
+                    .chain(original_dns.iter().cloned())
+                    .collect(),
+            }
+        },
+    );
 
     Ok(())
 }
@@ -382,22 +310,4 @@ fn get_dns_macos(service: &str) -> Vec<String> {
         }
         None => vec![],
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
-    debug!("Running: {cmd} {}", args.join(" "));
-    let output = Command::new(cmd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("{cmd}: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{cmd} {}: {}", args.join(" "), stderr.trim()));
-    }
-    Ok(())
 }
