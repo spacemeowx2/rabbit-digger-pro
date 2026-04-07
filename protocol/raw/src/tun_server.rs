@@ -23,6 +23,7 @@ use crate::{
     fake_ip::{generate_fake_response, FakeIpPool},
     forward::source,
     gateway::{GatewayDevice, MapTable},
+    route_setup::{RouteSetupConfig, RouteState},
 };
 
 #[rd_config]
@@ -45,7 +46,6 @@ pub struct TunServerConfig {
     /// TUN device name (e.g. "utun100" on macOS, "tun-rdp" on Linux)
     pub device: String,
     /// IP CIDR for the TUN interface itself (e.g. "10.0.0.1/24").
-    /// This is the address assigned to the TUN device, not the fake-ip range.
     #[serde(default = "default_tun_ip")]
     pub ip_addr: String,
     /// Fake-IP pool CIDR range (e.g. "198.18.0.0/15"). Only used in fake-ip mode.
@@ -59,8 +59,11 @@ pub struct TunServerConfig {
     #[serde(default)]
     pub dns_mode: DnsMode,
     /// Outbound proxy net — all intercepted traffic is forwarded through this.
-    /// In redir-host mode, DNS queries also go through this net.
     pub net: NetRef,
+    /// Socket fwmark for outbound traffic to bypass TUN (Linux).
+    /// The outbound net should set `mark` to the same value.
+    #[serde(default = "default_fwmark")]
+    pub fwmark: u32,
     /// Proxy server IPs to bypass TUN (prevent routing loop)
     #[serde(default)]
     pub bypass_ips: Vec<String>,
@@ -72,6 +75,10 @@ fn default_tun_ip() -> String {
 
 fn default_fake_ip_range() -> String {
     "198.18.0.0/15".to_string()
+}
+
+fn default_fwmark() -> u32 {
+    255
 }
 
 fn default_mtu() -> u16 {
@@ -88,7 +95,7 @@ impl IServer for TunServer {
     async fn start(&self) -> Result<()> {
         let config = &self.config;
 
-        // Parse TUN interface IP (small subnet for the device itself)
+        // Parse TUN interface IP
         let ip_cidr = IpCidr::from_str(&config.ip_addr)
             .map_err(|_| rd_interface::Error::other("Invalid ip_addr"))?;
         let ip_addr = match IpAddr::from(ip_cidr.address()) {
@@ -97,10 +104,7 @@ impl IServer for TunServer {
         };
         let gateway = ip_addr;
 
-        // Fake-IP range is separate from TUN interface IP
-        let _fake_ip_range = &config.fake_ip_range;
-
-        // Create TUN device
+        // 1. Create TUN device via tun crate (gets the fd for smoltcp)
         let raw_config = crate::config::RawNetConfig {
             device: crate::config::MaybeString::Other(crate::config::TunTapConfig {
                 tuntap: crate::config::TunTap::Tun,
@@ -117,15 +121,20 @@ impl IServer for TunServer {
         let (ethernet_addr, tun_device) = device::get_device(&raw_config)
             .map_err(|e| rd_interface::Error::other(format!("Failed to create TUN: {e}")))?;
 
-        // Set up smoltcp network stack with GatewayDevice
+        // 2. Set up smoltcp network stack with GatewayDevice.
+        //    Use 0.0.0.0/0 as the gateway CIDR so ALL incoming traffic is rewritten.
+        let gateway_cidr = IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0);
         let override_addr = SocketAddrV4::new(ip_addr, 1);
-        let gw_device =
-            GatewayDevice::new(tun_device, ethernet_addr, 65536, ip_cidr, override_addr);
+        let gw_device = GatewayDevice::new(
+            tun_device,
+            ethernet_addr,
+            65536,
+            gateway_cidr,
+            override_addr,
+        );
         let map = gw_device.get_map();
 
-        // TUN is always L3 (IP), not L2 (Ethernet)
-        let hw_addr = HardwareAddress::Ip;
-
+        let hw_addr = HardwareAddress::Ip; // TUN is L3
         let gw_ip = IpAddress::from_str(&gateway.to_string()).ok();
         let mut net_config = NetConfig::new(
             IfaceConfig::new(hw_addr),
@@ -143,28 +152,16 @@ impl IServer for TunServer {
         };
         let smoltcp_net = Arc::new(SmoltcpNet::new(gw_device, net_config));
 
-        // Set up system routes via tproxy-config.
-        // Always point system DNS to the TUN gateway so DNS traffic enters the TUN.
-        // - fake-ip mode: we intercept port 53 and respond with fake IPs
-        // - redir-host mode: DNS passes through as normal UDP, forwarded via `net`
-        let bypass: Vec<tproxy_config::IpCidr> = config
-            .bypass_ips
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
-
-        let tproxy_args = tproxy_config::TproxyArgs::new()
-            .tun_name(&config.device)
-            .tun_ip(IpAddr::V4(ip_addr))
-            .tun_gateway(IpAddr::V4(gateway))
-            .tun_dns(IpAddr::V4(gateway))
-            .tun_mtu(config.mtu)
-            .bypass_ips(&bypass)
-            .ipv4_default_route(true)
-            .ipv6_default_route(false);
-
-        let _tproxy_state = tproxy_config::tproxy_setup(&tproxy_args)
-            .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
+        // 3. Set up system routes.
+        //    Linux: policy routing with fwmark (not fwmark → TUN table)
+        //    macOS: route replace + scoped fallback
+        let _route_state = RouteState::setup(RouteSetupConfig {
+            tun_name: config.device.clone(),
+            tun_gateway: gateway.to_string(),
+            fwmark: config.fwmark,
+            dns_ip: gateway.to_string(),
+        })
+        .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
 
         tracing::info!(
             "TUN global mode active: device={}, dns={:?}",
@@ -172,10 +169,10 @@ impl IServer for TunServer {
             config.dns_mode
         );
 
-        // Initialize fake IP pool from the dedicated range (not the TUN interface IP)
+        // 4. Initialize fake IP pool
         let fake_ip = Arc::new(FakeIpPool::new(&config.fake_ip_range));
 
-        // Bind listeners
+        // 5. Bind listeners and serve traffic
         let tcp_listener = smoltcp_net
             .tcp_bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1).into())
             .await
@@ -189,7 +186,6 @@ impl IServer for TunServer {
             .await
             .map_err(|e| rd_interface::Error::other(format!("UDP raw: {e}")))?;
 
-        // Serve traffic
         let handler = TunHandler {
             net: self.net.clone(),
             map,
@@ -206,7 +202,7 @@ impl IServer for TunServer {
             r = udp_task => r?,
         };
 
-        // _tproxy_state dropped here → routes automatically restored
+        // _tproxy_state dropped here → routes cleaned up
         Ok(())
     }
 }
@@ -235,7 +231,6 @@ impl TunHandler {
                 tokio::spawn(async move {
                     let ctx = &mut Context::from_socketaddr(addr);
 
-                    // If destination is a fake IP, resolve back to domain
                     let target_addr = if fake_ip.contains(&IpAddr::V4(*orig_addr.ip())) {
                         if let Some(domain) = fake_ip.lookup(*orig_addr.ip()) {
                             (domain.as_str(), orig_addr.port()).into_address()?
@@ -262,19 +257,12 @@ impl TunHandler {
             dns_mode: self.dns_mode,
         };
 
-        // All UDP (including DNS in redir-host mode) is forwarded through `net`.
-        // The net chain determines how packets are routed — DNS resolution
-        // strategy is configured via the net chain, not here.
         rd_std::util::forward_udp::forward_udp(dns_source, self.net.clone(), None).await?;
-
         Ok(())
     }
 }
 
 /// Wraps the raw UDP source to intercept DNS queries in fake-ip mode.
-/// In fake-ip mode, port 53 UDP packets get a synthetic response.
-/// In redir-host mode, all packets (including DNS) pass through unmodified
-/// and get forwarded via the `net` chain like any other UDP traffic.
 struct DnsInterceptSource {
     inner: source::Source,
     fake_ip: Arc<FakeIpPool>,
@@ -290,7 +278,6 @@ impl rd_std::util::forward_udp::RawUdpSource for DnsInterceptSource {
         loop {
             let endpoint = ready!(self.inner.poll_recv(cx, buf))?;
 
-            // Only intercept DNS in fake-ip mode
             if endpoint.to.port() == 53 {
                 if let DnsMode::FakeIp = self.dns_mode {
                     let dns_request = buf.filled();
@@ -309,7 +296,6 @@ impl rd_std::util::forward_udp::RawUdpSource for DnsInterceptSource {
                         continue;
                     }
                 }
-                // redir-host: fall through, DNS forwarded as normal UDP via `net`
             }
 
             return std::task::Poll::Ready(Ok(endpoint));

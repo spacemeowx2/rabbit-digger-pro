@@ -124,6 +124,7 @@ impl LocalNetConfig {
 
         #[cfg(target_os = "linux")]
         if let Some(mark) = self.mark {
+            tracing::debug!("Setting SO_MARK={mark} on socket");
             socket.set_mark(mark)?;
         }
 

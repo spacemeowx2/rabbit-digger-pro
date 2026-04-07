@@ -91,8 +91,8 @@ function buildConfigText(settings: DaemonSettings): string {
   const outboundNet = 'proxy'
 
   if (settings.tunEnabled) {
-    // bind_device on local net to prevent routing loop
-    net['local'] = { type: 'local', bind_device: 'en0' }
+    // fwmark on local net to bypass TUN routing (prevents routing loop)
+    net['local'] = { type: 'local', mark: 255 }
     net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
     server['tun'] = {
       type: 'tun',
@@ -101,6 +101,7 @@ function buildConfigText(settings: DaemonSettings): string {
       mtu: settings.tunMtu,
       dns_mode: settings.tunDnsMode,
       net: 'resolve',
+      fwmark: 255,
       bypass_ips: [],
     }
   }

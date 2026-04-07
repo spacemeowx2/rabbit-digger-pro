@@ -9,6 +9,7 @@ pub mod fake_ip;
 mod forward;
 mod gateway;
 mod net;
+mod route_setup;
 mod server;
 mod tun_server;
 mod wrap;

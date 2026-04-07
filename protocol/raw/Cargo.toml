@@ -20,7 +20,6 @@ parking_lot = "0.12.1"
 parking_lot_core = "0.9.8"
 
 tokio-util = { version = "0.7.18", features = ["codec"] }
-tproxy-config = "5"
 
 [target.'cfg(unix)'.dependencies.tun-crate]
 version = "0.8.6"
