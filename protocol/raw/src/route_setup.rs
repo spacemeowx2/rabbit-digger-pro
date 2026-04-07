@@ -114,24 +114,19 @@ fn setup_linux(config: &RouteSetupConfig) -> Result<PlatformState, String> {
         ],
     )?;
 
-    // 2. Rule: packets WITHOUT fwmark → use TUN table (highest priority)
     let mark_str = config.fwmark.to_string();
-    run(
-        "ip",
-        &[
-            "rule", "add", "not", "fwmark", &mark_str, "table", TUN_TABLE, "priority", "100",
-        ],
-    )?;
 
-    // 3. DNS hijack: port 53 always goes through TUN table
-    let _ = run(
-        "ip",
-        &[
-            "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "101",
-        ],
-    );
+    // Priority order matters for response packets (which have no fwmark):
+    //
+    // 100: suppress_prefixlength 0 → main table specific routes (e.g. eth0 LAN)
+    //      Response packets from the real server match eth0's subnet route here.
+    // 200: not fwmark → TUN table (catches new outbound connections without mark)
+    // 201: DNS hijack → TUN table
+    //
+    // Packets WITH fwmark skip rule 200 (fwmark matches, "not fwmark" fails),
+    // fall through to 32766 (main table) → default gateway via eth0.
 
-    // 4. Suppress: allow local/direct routes in main table (lower priority than fwmark rule)
+    // 2. Suppress: specific routes in main table (for response packets on eth0)
     run(
         "ip",
         &[
@@ -142,9 +137,25 @@ fn setup_linux(config: &RouteSetupConfig) -> Result<PlatformState, String> {
             "suppress_prefixlength",
             "0",
             "priority",
-            "200",
+            "100",
         ],
     )?;
+
+    // 3. Rule: packets WITHOUT fwmark → use TUN table
+    run(
+        "ip",
+        &[
+            "rule", "add", "not", "fwmark", &mark_str, "table", TUN_TABLE, "priority", "200",
+        ],
+    )?;
+
+    // 4. DNS hijack: port 53 always goes through TUN table
+    let _ = run(
+        "ip",
+        &[
+            "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "201",
+        ],
+    );
 
     // 5. Set DNS
     let dns_modified = set_dns_linux(&config.dns_ip);

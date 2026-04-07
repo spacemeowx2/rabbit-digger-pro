@@ -242,8 +242,14 @@ impl TunHandler {
                     };
 
                     let target = net.tcp_connect(ctx, &target_addr).await?;
-                    ctx.connect_tcp(rd_interface::TcpStream::from(tcp), target)
-                        .await?;
+                    tracing::debug!("Bridging TUN TCP {} ↔ {}", addr, target_addr);
+                    match ctx
+                        .connect_tcp(rd_interface::TcpStream::from(tcp), target)
+                        .await
+                    {
+                        Ok(()) => tracing::debug!("TCP bridge closed normally for {}", addr),
+                        Err(e) => tracing::warn!("TCP bridge error for {}: {e}", addr),
+                    }
                     Ok(()) as Result<()>
                 });
             }
