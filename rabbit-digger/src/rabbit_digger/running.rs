@@ -346,10 +346,14 @@ pub struct RunningServer {
     state: RwLock<State>,
 }
 
-#[instrument(err, skip(server))]
-async fn server_start(name: String, server: &Server) -> anyhow::Result<()> {
+#[instrument(err, skip(server, ctx))]
+async fn server_start(
+    name: String,
+    server: &Server,
+    ctx: &rd_interface::EngineContext,
+) -> anyhow::Result<()> {
     server
-        .start()
+        .start(ctx)
         .inspect_err(move |e| tracing::error!("Server {} error: {:?}", name, e))
         .await?;
     Ok(())
@@ -368,7 +372,7 @@ impl RunningServer {
     pub fn server_type(&self) -> &str {
         &self.server_type
     }
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub async fn start(&self, ctx: rd_interface::EngineContext) -> anyhow::Result<()> {
         self.stop().await?;
 
         let name = self.name.clone();
@@ -376,8 +380,8 @@ impl RunningServer {
         let server = self.server.clone();
         let s2 = semaphore.clone();
         let task = async move {
-            let r = server_start(name, &server).await;
-            // TODO: is it safe to drop?
+            let r = server_start(name, &server, &ctx).await;
+            // ctx dropped here → side effects rolled back
             s2.close();
             r
         };
@@ -615,7 +619,7 @@ mod tests {
 
         #[async_trait]
         impl IServer for ForeverServer {
-            async fn start(&self) -> Result<()> {
+            async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
                 std::future::pending::<()>().await;
                 Ok(())
             }
@@ -628,7 +632,12 @@ mod tests {
         assert!(matches!(*server.state.read().await, State::Idle));
         assert!(server.take_result().await.is_none());
 
-        server.start().await.unwrap();
+        let ctx = rd_interface::EngineContext {
+            side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                rd_interface::SideEffectManager::in_memory(),
+            )),
+        };
+        server.start(ctx).await.unwrap();
         assert!(matches!(*server.state.read().await, State::Running { .. }));
 
         server.stop().await.unwrap();

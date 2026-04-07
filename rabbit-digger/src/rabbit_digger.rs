@@ -262,8 +262,20 @@ impl RabbitDigger {
         self.stop().await?;
         let state = &mut *inner.state.write().await;
 
+        // Create engine context with side effect manager for crash recovery
+        let se_path = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("rabbit_digger_pro")
+            .join("side_effects.json");
+        let se_path_str = se_path.to_string_lossy().to_string();
+
         for ServerInfo { running_server, .. } in entities.servers.values() {
-            running_server.start().await?;
+            let ctx = rd_interface::EngineContext {
+                side_effects: Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::new(&se_path_str),
+                )),
+            };
+            running_server.start(ctx).await?;
         }
 
         let servers: Vec<ServerSnapshot> = entities

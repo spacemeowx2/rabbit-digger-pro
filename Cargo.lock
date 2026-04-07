@@ -3138,6 +3138,7 @@ dependencies = [
  "anyhow",
  "atomic-shim",
  "dashmap",
+ "dirs",
  "futures",
  "indexmap 2.13.0",
  "parking_lot",
@@ -3330,6 +3331,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -75,7 +75,7 @@ impl ForwardServer {
 }
 #[async_trait]
 impl IServer for ForwardServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let tcp_task = self.serve_listener();
         let udp_task = self.serve_udp();
 
@@ -275,7 +275,16 @@ mod tests {
             udp: true,
             resolve_interval: None,
         };
-        tokio::spawn(async move { server.start().await.unwrap() });
+        tokio::spawn(async move {
+            server
+                .start(&rd_interface::EngineContext {
+                    side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                        rd_interface::SideEffectManager::in_memory(),
+                    )),
+                })
+                .await
+                .unwrap()
+        });
         spawn_echo_server(&net, "127.0.0.1:4321").await;
         spawn_echo_server_udp(&net, "127.0.0.1:4321").await;
 

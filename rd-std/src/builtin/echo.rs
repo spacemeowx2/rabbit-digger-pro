@@ -27,7 +27,7 @@ impl EchoServer {
 }
 #[async_trait]
 impl IServer for EchoServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let listener = self
             .listen
             .tcp_bind(&mut Context::new(), &self.bind)
@@ -83,7 +83,16 @@ mod tests {
             listen: net.clone(),
             bind: "127.0.0.1:1234".into_address().unwrap(),
         };
-        tokio::spawn(async move { server.start().await.unwrap() });
+        tokio::spawn(async move {
+            server
+                .start(&rd_interface::EngineContext {
+                    side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                        rd_interface::SideEffectManager::in_memory(),
+                    )),
+                })
+                .await
+                .unwrap()
+        });
 
         sleep(Duration::from_millis(1)).await;
 

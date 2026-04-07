@@ -25,7 +25,7 @@ pub struct RedirServer {
 
 #[async_trait]
 impl IServer for RedirServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let listener = TcpListener::bind(&self.bind.to_string()).await?;
         self.serve_listener(listener).await
     }

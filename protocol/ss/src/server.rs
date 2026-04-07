@@ -40,7 +40,7 @@ pub struct SSServer {
 
 #[async_trait]
 impl IServer for SSServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         select! {
             r = self.serve_tcp() => r,
             r = self.serve_udp() => r,

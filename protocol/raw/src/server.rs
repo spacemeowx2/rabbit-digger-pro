@@ -22,7 +22,7 @@ pub struct RawServer {
 
 #[async_trait]
 impl IServer for RawServer {
-    async fn start(&self) -> rd_interface::Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> rd_interface::Result<()> {
         let params = &self.params;
         forward_net(
             self.net.clone(),

@@ -52,7 +52,15 @@ async fn test_vless_server_client() {
         udp: true,
     };
     let server = server::VlessServer::new(server_cfg).unwrap();
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_secs(1)).await;
 

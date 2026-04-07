@@ -181,7 +181,7 @@ impl VlessServer {
 
 #[async_trait]
 impl IServer for VlessServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let listener = self
             .listen
             .tcp_bind(&mut rd_interface::Context::new(), &self.bind)

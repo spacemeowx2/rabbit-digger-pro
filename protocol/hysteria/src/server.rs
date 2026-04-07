@@ -70,7 +70,7 @@ impl HysteriaServer {
 
 #[async_trait]
 impl IServer for HysteriaServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let endpoint = create_endpoint(&self.cfg)?;
         serve_endpoint(endpoint, self.cfg.clone(), self.net.clone()).await
     }

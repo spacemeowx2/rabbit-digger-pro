@@ -92,7 +92,7 @@ pub struct TunServer {
 
 #[async_trait]
 impl IServer for TunServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, ctx: &rd_interface::EngineContext) -> Result<()> {
         let config = &self.config;
 
         // Parse TUN interface IP

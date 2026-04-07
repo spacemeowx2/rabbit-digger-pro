@@ -57,7 +57,7 @@ pub struct HttpSocks5 {
 
 #[async_trait]
 impl IServer for HttpSocks5 {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let listener = self
             .listen_net
             .tcp_bind(&mut Context::new(), &self.bind)

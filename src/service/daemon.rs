@@ -17,7 +17,18 @@ fn log_file_path() -> std::path::PathBuf {
         .join("daemon.log")
 }
 
+fn side_effects_path() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("rabbit_digger_pro")
+        .join("side_effects.json")
+}
+
 pub async fn run_daemon(bind: String, access_token: Option<String>) -> Result<()> {
+    // Crash recovery: clean up any side effects from a previous crash
+    let se_path = side_effects_path();
+    rd_interface::SideEffectManager::recover(&se_path.to_string_lossy());
+
     let app = App::new().await?;
 
     // Channel: API handlers send ImportSource here → main loop feeds to engine
