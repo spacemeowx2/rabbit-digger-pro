@@ -59,7 +59,8 @@ pub struct ApiServerConfig {
 
 impl App {
     pub async fn new() -> Result<Self> {
-        let rd = RabbitDigger::new(get_registry()?).await?;
+        let se_path = util::app_dirs::data_dir().join("side_effects.json");
+        let rd = RabbitDigger::new(get_registry()?, se_path).await?;
         let cfg_mgr = ConfigManager::new().await?;
 
         Ok(Self { rd, cfg_mgr })

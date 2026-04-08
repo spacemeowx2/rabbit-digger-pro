@@ -1,3 +1,4 @@
+pub mod app_dirs;
 pub use debounce_stream::{DebounceStream, DebounceStreamExt};
 pub use exit_stream::exit_stream;
 #[cfg(feature = "api_server")]

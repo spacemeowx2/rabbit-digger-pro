@@ -177,9 +177,7 @@ async fn main() -> Result<()> {
         })
     );
     let file_layer = if is_daemon {
-        let log_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rabbit_digger_pro");
+        let log_dir = rabbit_digger_pro::util::app_dirs::data_dir();
         std::fs::create_dir_all(&log_dir).ok();
         let log_path = log_dir.join("daemon.log");
         let file = std::fs::OpenOptions::new()

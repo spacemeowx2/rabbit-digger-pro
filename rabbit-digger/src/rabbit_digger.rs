@@ -98,6 +98,7 @@ struct Inner {
     conn_mgr: ConnectionManager,
     event_tx: broadcast::Sender<ServerEvent>,
     current_status: std::sync::RwLock<EngineStatus>,
+    side_effects_path: std::path::PathBuf,
 }
 
 impl Drop for Inner {
@@ -119,7 +120,10 @@ impl fmt::Debug for RabbitDigger {
 }
 
 impl RabbitDigger {
-    pub async fn new(registry: Registry) -> Result<RabbitDigger> {
+    pub async fn new(
+        registry: Registry,
+        side_effects_path: impl Into<std::path::PathBuf>,
+    ) -> Result<RabbitDigger> {
         let manager = ConnectionManager::new();
         let (event_tx, _) = broadcast::channel(64);
 
@@ -128,6 +132,7 @@ impl RabbitDigger {
             conn_mgr: manager,
             event_tx,
             current_status: std::sync::RwLock::new(EngineStatus::Idle),
+            side_effects_path: side_effects_path.into(),
         };
 
         Ok(RabbitDigger {
@@ -263,11 +268,7 @@ impl RabbitDigger {
         let state = &mut *inner.state.write().await;
 
         // Create engine context with side effect manager for crash recovery
-        let se_path = dirs::data_local_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("rabbit_digger_pro")
-            .join("side_effects.json");
-        let se_path_str = se_path.to_string_lossy().to_string();
+        let se_path_str = inner.side_effects_path.to_string_lossy().to_string();
 
         for ServerInfo { running_server, .. } in entities.servers.values() {
             let ctx = rd_interface::EngineContext {

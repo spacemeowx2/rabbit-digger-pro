@@ -11,17 +11,11 @@ use crate::{
 const LAST_SOURCE_KEY: &str = "daemon/last_source";
 
 fn log_file_path() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rabbit_digger_pro")
-        .join("daemon.log")
+    crate::util::app_dirs::data_dir().join("daemon.log")
 }
 
 fn side_effects_path() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("rabbit_digger_pro")
-        .join("side_effects.json")
+    crate::util::app_dirs::data_dir().join("side_effects.json")
 }
 
 pub async fn run_daemon(bind: String, access_token: Option<String>) -> Result<()> {

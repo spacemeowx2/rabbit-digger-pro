@@ -5,23 +5,24 @@ use anyhow::{bail, Context, Result};
 
 use super::{ServiceAction, SERVICE_LABEL};
 
-fn plist_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Cannot determine home directory")?;
-    let path = home
-        .join("Library/LaunchAgents")
-        .join(format!("{SERVICE_LABEL}.plist"));
-    Ok(path)
+const HELPER_DIR: &str = "/Library/PrivilegedHelperTools";
+
+fn helper_binary_path() -> PathBuf {
+    PathBuf::from(HELPER_DIR).join("rabbit-digger-pro")
+}
+
+fn plist_path() -> PathBuf {
+    PathBuf::from("/Library/LaunchDaemons").join(format!("{SERVICE_LABEL}.plist"))
 }
 
 fn log_dir() -> Result<PathBuf> {
-    let data_dir = dirs::data_local_dir().context("Cannot determine data directory")?;
-    let dir = data_dir.join("rabbit_digger_pro");
+    let dir = crate::util::app_dirs::data_dir().join("logs");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
 fn generate_plist(bind: &str, access_token: Option<&str>) -> Result<String> {
-    let binary_path = std::env::current_exe().context("Cannot determine binary path")?;
+    let binary_path = helper_binary_path();
     let binary_path = binary_path
         .to_str()
         .context("Binary path is not valid UTF-8")?;
@@ -87,12 +88,8 @@ pub async fn handle_service_action(action: ServiceAction) -> Result<()> {
 }
 
 async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
-    let plist = plist_path()?;
-
-    // Ensure LaunchAgents directory exists
-    if let Some(parent) = plist.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    super::ensure_root()?;
+    let plist = plist_path();
 
     // Unload existing service if present
     if plist.exists() {
@@ -100,6 +97,21 @@ async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
             .args(["unload", plist.to_str().unwrap()])
             .output();
     }
+
+    // Copy binary to /Library/PrivilegedHelperTools/
+    let current_exe = std::env::current_exe().context("Cannot determine binary path")?;
+    let dest = helper_binary_path();
+    std::fs::create_dir_all(HELPER_DIR).context("Failed to create PrivilegedHelperTools dir")?;
+    std::fs::copy(&current_exe, &dest)
+        .with_context(|| format!("Failed to copy binary to {}", dest.display()))?;
+
+    // Ensure correct ownership and permissions (root:wheel, 755)
+    let _ = Command::new("chown")
+        .args(["root:wheel", dest.to_str().unwrap()])
+        .output();
+    let _ = Command::new("chmod")
+        .args(["755", dest.to_str().unwrap()])
+        .output();
 
     let content = generate_plist(bind, access_token)?;
     std::fs::write(&plist, &content).context("Failed to write plist file")?;
@@ -114,14 +126,17 @@ async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
         bail!("launchctl load failed: {}", stderr);
     }
 
-    println!("Service installed and started.");
-    println!("  Plist: {}", plist.display());
-    println!("  WebUI: http://{}", bind);
+    println!("Service installed as root daemon.");
+    println!("  Binary: {}", dest.display());
+    println!("  Plist:  {}", plist.display());
+    println!("  Logs:   /var/log/rabbit_digger_pro/");
+    println!("  WebUI:  http://{}", bind);
     Ok(())
 }
 
 async fn uninstall() -> Result<()> {
-    let plist = plist_path()?;
+    super::ensure_root()?;
+    let plist = plist_path();
 
     if !plist.exists() {
         bail!(
@@ -141,6 +156,13 @@ async fn uninstall() -> Result<()> {
     }
 
     std::fs::remove_file(&plist).context("Failed to remove plist file")?;
+
+    // Remove helper binary
+    let dest = helper_binary_path();
+    if dest.exists() {
+        std::fs::remove_file(&dest).context("Failed to remove helper binary")?;
+    }
+
     println!("Service uninstalled.");
     Ok(())
 }

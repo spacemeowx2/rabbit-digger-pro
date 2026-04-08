@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use dirs::{cache_dir, data_local_dir};
 use fs2::FileExt;
 use rd_interface::async_trait;
 use serde::{Deserialize, Serialize};
@@ -20,21 +19,17 @@ use uuid::Uuid;
 
 pub use super::{Storage, StorageItem, StorageKey};
 
-const PROGRAM_DIR: &str = "rabbit_digger_pro";
-
 pub enum FolderType {
     Cache,
     Data,
 }
 
 impl FolderType {
-    fn path(&self, folder: impl AsRef<Path>) -> Result<PathBuf> {
+    pub fn path(&self, folder: impl AsRef<Path>) -> Result<PathBuf> {
         Ok(match self {
-            FolderType::Cache => cache_dir(),
-            FolderType::Data => data_local_dir(),
+            FolderType::Cache => crate::util::app_dirs::cache_dir(),
+            FolderType::Data => crate::util::app_dirs::data_dir(),
         }
-        .ok_or_else(|| anyhow::anyhow!("no cache dir"))?
-        .join(PROGRAM_DIR)
         .join(folder))
     }
 }
