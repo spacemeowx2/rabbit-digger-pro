@@ -450,6 +450,10 @@ pub(super) async fn get_logs(
     Ok(Json(entries))
 }
 
+pub(super) async fn get_suggest_tun_ip() -> Json<Value> {
+    Json(json!({ "ip": crate::util::suggest_tun_ip() }))
+}
+
 pub(super) async fn sse_events(
     Extension(Ctx { rd, .. }): Extension<Ctx>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {

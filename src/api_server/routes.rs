@@ -92,6 +92,7 @@ impl ApiServer {
             .route("/stream/events", get(handlers::sse_events))
             .route("/stream/connections", get(handlers::get_connection))
             .route("/stream/logs", get(handlers::ws_log))
+            .route("/suggest_tun_ip", get(handlers::get_suggest_tun_ip))
             .layer(Extension(ctx));
 
         if let Some(token) = &self.access_token {

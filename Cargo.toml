@@ -84,6 +84,7 @@ rhai = { version = "1.24.0", optional = true, features = [
     "only_i32",
 ] }
 
+if-addrs = { version = "0.13", optional = true }
 include_dir = { version = "0.7", optional = true }
 
 jemallocator = { version = "0.5.4", optional = true }
@@ -117,6 +118,7 @@ api_server = [
     "hyper",
     "percent-encoding",
     "bytes",
+    "if-addrs",
 ]
 webui_embed = ["api_server", "include_dir"]
 console = ["console-subscriber", "tokio/tracing"]

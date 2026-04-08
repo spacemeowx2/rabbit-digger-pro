@@ -35,7 +35,7 @@ const DEFAULT_SETTINGS: DaemonSettings = {
   port: 10800,
   tunEnabled: false,
   tunDnsMode: 'fake-ip',
-  tunIp: '10.0.0.1/24',
+  tunIp: '',
   tunMtu: 1400,
 }
 
@@ -94,16 +94,17 @@ function buildConfigText(settings: DaemonSettings): string {
     // fwmark on local net to bypass TUN routing (prevents routing loop)
     net['local'] = { type: 'local', mark: 255 }
     net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
-    server['tun'] = {
+    const tunConfig: Record<string, unknown> = {
       type: 'tun',
       device: 'utun100',
-      ip_addr: settings.tunIp,
-      mtu: settings.tunMtu,
       dns_mode: settings.tunDnsMode,
       net: 'resolve',
       fwmark: 255,
       bypass_ips: [],
     }
+    if (settings.tunIp) tunConfig.ip_addr = settings.tunIp
+    if (settings.tunMtu) tunConfig.mtu = settings.tunMtu
+    server['tun'] = tunConfig
   }
 
   server['mixed'] = {
@@ -231,16 +232,21 @@ export function SettingsPage({ runtimeState }: SettingsPageProps) {
   }, [runtimeState]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    rdpApi
-      .getUserdata<{ content: string }>(SETTINGS_KEY)
-      .then((data) => {
-        try {
-          const parsed = JSON.parse(data.content) as DaemonSettings
-          setSettings({ ...DEFAULT_SETTINGS, ...parsed })
-        } catch { /* use defaults */ }
-      })
-      .catch(() => {})
-      .finally(() => setLoaded(true))
+    Promise.all([
+      rdpApi.getUserdata<{ content: string }>(SETTINGS_KEY).catch(() => null),
+      rdpApi.suggestTunIp().catch(() => ({ ip: '' })),
+    ]).then(([data, suggested]) => {
+      let parsed: Partial<DaemonSettings> = {}
+      if (data) {
+        try { parsed = JSON.parse(data.content) as DaemonSettings } catch { /* use defaults */ }
+      }
+      const merged = { ...DEFAULT_SETTINGS, ...parsed }
+      // Use server-suggested IP when user hasn't set one
+      if (!merged.tunIp && suggested.ip) {
+        merged.tunIp = suggested.ip
+      }
+      setSettings(merged)
+    }).finally(() => setLoaded(true))
   }, [])
 
   const saveSettings = useCallback(async (next: DaemonSettings) => {
@@ -574,29 +580,34 @@ export function SettingsPage({ runtimeState }: SettingsPageProps) {
                   <option value="redir-host">Redir-Host</option>
                 </select>
               </div>
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-slate-600 w-32 shrink-0">IP 地址</label>
-                <input
-                  className="field w-48"
-                  value={settings.tunIp}
-                  onChange={(e) => setSettings((s) => ({ ...s, tunIp: e.target.value }))}
-                  onBlur={() => void saveSettings(settings)}
-                  placeholder="192.168.233.1/24"
-                />
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="text-sm text-slate-600 w-32 shrink-0">MTU</label>
-                <input
-                  className="field w-32"
-                  type="number"
-                  value={settings.tunMtu}
-                  onChange={(e) => {
-                    const mtu = parseInt(e.target.value, 10)
-                    if (mtu > 0) setSettings((s) => ({ ...s, tunMtu: mtu }))
-                  }}
-                  onBlur={() => void saveSettings(settings)}
-                />
-              </div>
+              <details className="mt-1">
+                <summary className="text-xs text-slate-400 cursor-pointer select-none">高级设置</summary>
+                <div className="mt-2 space-y-3">
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm text-slate-600 w-32 shrink-0">IP 地址</label>
+                    <input
+                      className="field w-48"
+                      value={settings.tunIp}
+                      onChange={(e) => setSettings((s) => ({ ...s, tunIp: e.target.value }))}
+                      onBlur={() => void saveSettings(settings)}
+                      placeholder="10.0.0.1/24"
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm text-slate-600 w-32 shrink-0">MTU</label>
+                    <input
+                      className="field w-32"
+                      type="number"
+                      value={settings.tunMtu}
+                      onChange={(e) => {
+                        const mtu = parseInt(e.target.value, 10)
+                        if (mtu > 0) setSettings((s) => ({ ...s, tunMtu: mtu }))
+                      }}
+                      onBlur={() => void saveSettings(settings)}
+                    />
+                  </div>
+                </div>
+              </details>
             </>
           )}
         </div>

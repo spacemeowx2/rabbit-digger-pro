@@ -85,4 +85,7 @@ export const rdpApi = {
   listUserdata() {
     return readJson<{ keys: Array<{ key: string; updated_at: string }> }>('/api/userdata')
   },
+  suggestTunIp() {
+    return readJson<{ ip: string }>('/api/suggest_tun_ip')
+  },
 }
