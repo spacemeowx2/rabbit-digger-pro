@@ -216,10 +216,18 @@ mod tests {
 
     #[test]
     fn test_drop_triggers_rollback() {
-        let persist_path = format!("/tmp/rdp-test-se-{}", std::process::id());
+        let persist_path = std::env::temp_dir().join(format!(
+            "rdp-test-se-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let persist_path_str = persist_path.to_string_lossy().to_string();
 
         {
-            let mut mgr = SideEffectManager::new(&persist_path);
+            let mut mgr = SideEffectManager::new(&persist_path_str);
             mgr.apply(
                 "test",
                 || Ok(()),
@@ -234,6 +242,6 @@ mod tests {
             assert!(std::fs::read_to_string(&persist_path).is_ok());
         }
         // After drop, file should be cleaned up
-        assert!(!std::path::Path::new(&persist_path).exists());
+        assert!(!persist_path.exists());
     }
 }
