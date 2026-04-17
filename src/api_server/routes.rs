@@ -6,27 +6,22 @@ use axum::{
     middleware::{self, Next},
     response::IntoResponse,
     routing::get,
-    routing::{delete, get_service, post},
+    routing::get_service,
     Router,
 };
 use hyper::{
     header::{AUTHORIZATION, CONTENT_TYPE},
     Method, Request, StatusCode,
 };
-use rd_interface::Arc;
 use serde::Deserialize;
+use std::sync::Arc;
 use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
 
-use crate::storage::{FileStorage, FolderType};
-
-use super::{
-    handlers::{self, Ctx},
-    ApiServer,
-};
+use super::{rpc, shared::Ctx, ApiServer};
 
 impl ApiServer {
     pub async fn routes(&self) -> Result<Router> {
@@ -62,37 +57,16 @@ impl ApiServer {
         let ctx = Ctx {
             rd: self.rabbit_digger.clone(),
             cfg_mgr: self.config_manager.clone(),
-            userdata: Arc::new(FileStorage::new(FolderType::Data, "userdata").await?),
+            userdata: std::sync::Arc::new(
+                crate::storage::FileStorage::new(crate::storage::FolderType::Data, "userdata")
+                    .await?,
+            ),
             source_sender: self.source_sender.as_ref().map(|s| Arc::new(s.clone())),
             log_file_path: self.log_file_path.clone(),
         };
 
         let mut router = Router::new()
-            .route(
-                "/config",
-                get(handlers::get_config).post(handlers::post_config),
-            )
-            .route("/registry", get(handlers::get_registry))
-            .route("/connection/{uuid}", delete(handlers::delete_conn))
-            .route(
-                "/connection",
-                get(handlers::get_connections).delete(handlers::delete_connections),
-            )
-            .route("/net/{net_name}/select", post(handlers::post_select))
-            .route("/net/{net_name}/delay", get(handlers::get_delay))
-            .route(
-                "/userdata/{*path}",
-                get(handlers::get_userdata)
-                    .put(handlers::put_userdata)
-                    .delete(handlers::delete_userdata),
-            )
-            .route("/userdata", get(handlers::list_userdata))
-            .route("/engine/stop", post(handlers::post_engine_stop))
-            .route("/logs", get(handlers::get_logs))
-            .route("/stream/events", get(handlers::sse_events))
-            .route("/stream/connections", get(handlers::get_connection))
-            .route("/stream/logs", get(handlers::ws_log))
-            .route("/suggest_tun_ip", get(handlers::get_suggest_tun_ip))
+            .route("/rpc", get(rpc::ws_rpc))
             .layer(Extension(ctx));
 
         if let Some(token) = &self.access_token {
