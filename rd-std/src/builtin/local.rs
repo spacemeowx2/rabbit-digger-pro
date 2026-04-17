@@ -124,6 +124,7 @@ impl LocalNetConfig {
 
         #[cfg(target_os = "linux")]
         if let Some(mark) = self.mark {
+            tracing::debug!("Setting SO_MARK={mark} on socket");
             socket.set_mark(mark)?;
         }
 
@@ -179,12 +180,21 @@ impl LocalNet {
         self.cfg
             .set_socket(SockRef::from(&socket), addr, true, false)?;
 
+        let local_before = socket.local_addr().ok();
+        tracing::debug!("tcp_connect_single: target={addr}, local_before_connect={local_before:?}");
+
         let socket = net::TcpSocket::from_std_stream(socket.into());
 
+        let start = std::time::Instant::now();
         let tcp = match self.cfg.connect_timeout {
             None => socket.connect(addr).await?,
             Some(secs) => timeout(Duration::from_secs(secs), socket.connect(addr)).await??,
         };
+        let elapsed = start.elapsed();
+        let local_after = tcp.local_addr().ok();
+        tracing::debug!(
+            "tcp_connect_single: connected in {elapsed:?}, local_after={local_after:?}"
+        );
 
         Ok(tcp)
     }

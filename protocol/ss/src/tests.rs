@@ -30,7 +30,15 @@ async fn test_ss_server_client() {
         cipher: Cipher::AES_128_GCM,
     };
     let server = server::SSServer::new(server_cfg).unwrap();
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_secs(1)).await;
 

@@ -1998,6 +1998,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "if-addrs"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b2eeee38fef3aa9b4cc5f1beea8a2444fc00e7377cafae396de3f5c2065e24"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "include_dir"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3170,9 +3180,11 @@ dependencies = [
  "futures",
  "hyper",
  "hysteria",
+ "if-addrs",
  "include_dir",
  "jemallocator",
  "json-patch",
+ "libc",
  "mimalloc",
  "notify-stream",
  "obfs",
@@ -3285,6 +3297,7 @@ dependencies = [
  "rd-interface",
  "rd-std",
  "serde",
+ "simple-dns",
  "tokio",
  "tokio-smoltcp",
  "tokio-util",
@@ -3329,6 +3342,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4128,6 +4142,15 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "simple-dns"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dee851d0e5e7af3721faea1843e8015e820a234f81fda3dea9247e15bac9a86a"
+dependencies = [
+ "bitflags 2.10.0",
+]
 
 [[package]]
 name = "siphasher"

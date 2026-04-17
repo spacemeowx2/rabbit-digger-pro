@@ -24,7 +24,15 @@ async fn test_socks5_server_client() {
         local.clone(),
         "127.0.0.1:16666".into_address().unwrap(),
     );
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_secs(1)).await;
 

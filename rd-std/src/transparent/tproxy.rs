@@ -45,7 +45,7 @@ pub struct TProxyServer {
 
 #[async_trait]
 impl IServer for TProxyServer {
-    async fn start(&self) -> Result<()> {
+    async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
         let tcp_listener = create_tcp_listener(self.bind.to_socket_addr()?).await?;
         let udp_listener = TransparentUdp::listen(self.bind.to_socket_addr()?)?;
 

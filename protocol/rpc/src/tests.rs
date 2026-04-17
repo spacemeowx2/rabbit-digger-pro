@@ -35,7 +35,15 @@ async fn test_rpc_server_client_codec(codec: Codec) {
         codec,
     )
     .into_dyn();
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_millis(10)).await;
 
@@ -72,7 +80,15 @@ async fn test_broken_session_codec(codec: Codec) {
         false,
         codec,
     );
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     yield_now().await;
 
@@ -141,7 +157,15 @@ async fn test_client_reconnect_codec(codec: Codec) {
         codec,
     );
     let server2 = server.clone();
-    let server_handle = tokio::spawn(async move { server2.start().await });
+    let server_handle = tokio::spawn(async move {
+        server2
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     yield_now().await;
 
@@ -158,7 +182,15 @@ async fn test_client_reconnect_codec(codec: Codec) {
 
     assert!(listener.accept().await.is_err());
 
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
     yield_now().await;
 
     // reconnected

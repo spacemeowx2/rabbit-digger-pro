@@ -267,7 +267,15 @@ async fn test_xray_client_with_rdp_server_tcp_udp() {
         listen: NetRef::new_with_value("out".into(), outbound.clone()),
     })
     .unwrap();
-    let server_task = tokio::spawn(async move { server.start().await });
+    let server_task = tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
     sleep(Duration::from_secs(1)).await;
 
     let client_tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -548,7 +556,15 @@ async fn test_xray_client_with_rdp_reality_server_tcp_udp() {
         listen: NetRef::new_with_value("out".into(), outbound.clone()),
     })
     .unwrap();
-    let server_task = tokio::spawn(async move { server.start().await });
+    let server_task = tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
     sleep(Duration::from_secs(1)).await;
 
     let client_tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -335,9 +335,6 @@ enum State {
         handle: JoinHandle<anyhow::Result<()>>,
         semaphore: Arc<Semaphore>,
     },
-    Finished {
-        result: anyhow::Result<()>,
-    },
 }
 
 pub struct RunningServer {
@@ -349,10 +346,14 @@ pub struct RunningServer {
     state: RwLock<State>,
 }
 
-#[instrument(err, skip(server))]
-async fn server_start(name: String, server: &Server) -> anyhow::Result<()> {
+#[instrument(err, skip(server, ctx))]
+async fn server_start(
+    name: String,
+    server: &Server,
+    ctx: &rd_interface::EngineContext,
+) -> anyhow::Result<()> {
     server
-        .start()
+        .start(ctx)
         .inspect_err(move |e| tracing::error!("Server {} error: {:?}", name, e))
         .await?;
     Ok(())
@@ -371,7 +372,7 @@ impl RunningServer {
     pub fn server_type(&self) -> &str {
         &self.server_type
     }
-    pub async fn start(&self) -> anyhow::Result<()> {
+    pub async fn start(&self, ctx: rd_interface::EngineContext) -> anyhow::Result<()> {
         self.stop().await?;
 
         let name = self.name.clone();
@@ -379,8 +380,8 @@ impl RunningServer {
         let server = self.server.clone();
         let s2 = semaphore.clone();
         let task = async move {
-            let r = server_start(name, &server).await;
-            // TODO: is it safe to drop?
+            let r = server_start(name, &server, &ctx).await;
+            // ctx dropped here → side effects rolled back
             s2.close();
             r
         };
@@ -390,7 +391,7 @@ impl RunningServer {
 
         Ok(())
     }
-    pub async fn stop(&self) -> Result<()> {
+    pub async fn stop(&self) -> anyhow::Result<()> {
         match &*self.state.read().await {
             State::Running {
                 handle, semaphore, ..
@@ -400,43 +401,32 @@ impl RunningServer {
             }
             _ => return Ok(()),
         };
-        self.join().await;
+        self.wait_finished().await;
 
         Ok(())
     }
-    pub async fn join(&self) {
+    /// Block until the server task completes. Does NOT transition state.
+    /// Safe to call concurrently from multiple callers.
+    pub async fn wait_finished(&self) {
         let state = self.state.read().await;
 
-        match &*state {
-            State::Running { semaphore, .. } => {
-                let _ = semaphore.acquire().await;
-            }
-            _ => return,
-        };
-        drop(state);
-
-        let mut state = self.state.write().await;
-
-        let result = match &mut *state {
-            State::Running { handle, .. } => handle.await.map_err(Into::into).and_then(|i| i),
-            _ => return,
-        };
-
-        *state = State::Finished { result };
+        if let State::Running { semaphore, .. } = &*state {
+            let _ = semaphore.acquire().await;
+        }
     }
+    /// Wait for the server task to finish, then collect the result
+    /// and transition back to `Idle`. Returns `None` if not running.
+    /// Wait for the server task to finish, then collect the result
+    /// and transition back to `Idle`. Returns `None` if not running.
     pub async fn take_result(&self) -> Option<anyhow::Result<()>> {
-        let mut state = self.state.write().await;
+        self.wait_finished().await;
 
-        match &*state {
-            State::Finished { .. } => {
-                let old = replace(&mut *state, State::Idle);
-                return match old {
-                    State::Finished { result, .. } => Some(result),
-                    _ => unreachable!(),
-                };
-            }
-            _ => return None,
-        };
+        let mut state = self.state.write().await;
+        let old = replace(&mut *state, State::Idle);
+        match old {
+            State::Running { handle, .. } => Some(handle.await.map_err(Into::into).and_then(|i| i)),
+            State::Idle => None,
+        }
     }
 }
 
@@ -629,7 +619,7 @@ mod tests {
 
         #[async_trait]
         impl IServer for ForeverServer {
-            async fn start(&self) -> Result<()> {
+            async fn start(&self, _ctx: &rd_interface::EngineContext) -> Result<()> {
                 std::future::pending::<()>().await;
                 Ok(())
             }
@@ -642,13 +632,21 @@ mod tests {
         assert!(matches!(*server.state.read().await, State::Idle));
         assert!(server.take_result().await.is_none());
 
-        server.start().await.unwrap();
+        let ctx = rd_interface::EngineContext {
+            side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                rd_interface::SideEffectManager::in_memory(),
+            )),
+        };
+        server.start(ctx).await.unwrap();
         assert!(matches!(*server.state.read().await, State::Running { .. }));
 
         server.stop().await.unwrap();
-        assert!(matches!(*server.state.read().await, State::Finished { .. }));
+        // After stop, task is done but state is still Running (awaiting take_result)
+        assert!(matches!(*server.state.read().await, State::Running { .. }));
 
         let err = server.take_result().await.unwrap().unwrap_err();
         assert!(err.downcast_ref::<JoinError>().unwrap().is_cancelled());
+        // After take_result, state is Idle
+        assert!(matches!(*server.state.read().await, State::Idle));
     }
 }

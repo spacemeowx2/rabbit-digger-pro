@@ -21,7 +21,15 @@ async fn test_http_server_client() {
         local.clone(),
         "127.0.0.1:16667".into_address().unwrap(),
     );
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_secs(1)).await;
 
@@ -44,7 +52,15 @@ async fn test_http_server_auth() {
         "testuser".to_string(),
         "testpass".to_string(),
     );
-    tokio::spawn(async move { server.start().await });
+    tokio::spawn(async move {
+        server
+            .start(&rd_interface::EngineContext {
+                side_effects: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    rd_interface::SideEffectManager::in_memory(),
+                )),
+            })
+            .await
+    });
 
     sleep(Duration::from_secs(1)).await;
 

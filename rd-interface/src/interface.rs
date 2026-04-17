@@ -348,18 +348,26 @@ impl Net {
     }
 }
 
+/// Context provided by the engine to servers during start.
+/// Cloneable so it can be shared across spawned tasks.
+#[derive(Clone)]
+pub struct EngineContext {
+    pub side_effects: Arc<tokio::sync::Mutex<crate::side_effect::SideEffectManager>>,
+}
+
 /// A Server.
 #[async_trait]
 pub trait IServer: Unpin + Send + Sync {
-    /// Start the server, drop to stop.
-    async fn start(&self) -> Result<()>;
+    /// Start the server. The context provides engine capabilities
+    /// like side effect management.
+    async fn start(&self, ctx: &EngineContext) -> Result<()>;
 }
 #[derive(Clone)]
 pub struct Server(Arc<dyn IServer>);
 
 impl Server {
-    pub async fn start(&self) -> Result<()> {
-        self.0.start().await
+    pub async fn start(&self, ctx: &EngineContext) -> Result<()> {
+        self.0.start(ctx).await
     }
 }
 

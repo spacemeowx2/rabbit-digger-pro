@@ -54,6 +54,7 @@ tower-http = { version = "0.6.8", features = [
     "trace",
 ], optional = true }
 dirs = { version = "6.0.0" }
+libc = "0.2"
 json-patch = { version = "4.1.0", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
 hyper = { version = "1.9.0", optional = true, features = ["http1", "client"] }
@@ -84,6 +85,7 @@ rhai = { version = "1.24.0", optional = true, features = [
     "only_i32",
 ] }
 
+if-addrs = { version = "0.13", optional = true }
 include_dir = { version = "0.7", optional = true }
 
 jemallocator = { version = "0.5.4", optional = true }
@@ -117,6 +119,7 @@ api_server = [
     "hyper",
     "percent-encoding",
     "bytes",
+    "if-addrs",
 ]
 webui_embed = ["api_server", "include_dir"]
 console = ["console-subscriber", "tokio/tracing"]
