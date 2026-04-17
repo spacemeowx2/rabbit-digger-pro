@@ -1,13 +1,9 @@
 import { create } from 'zustand'
 import { applyPatch, type Operation } from 'fast-json-patch'
 
-import { getWebSocketUrl, rdpApi } from './api'
+import { rdpApi } from './api'
 import type { ConnectionSnapshot, EngineStatus, LogEntry, TrafficSample } from './types'
 import { parseLogChunk } from './utils'
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 const EMPTY_CONNECTIONS: ConnectionSnapshot = {
   connections: {},
@@ -16,31 +12,20 @@ const EMPTY_CONNECTIONS: ConnectionSnapshot = {
 }
 
 interface RdpStore {
-  // Engine status (SSE-driven)
   engineStatus: EngineStatus
-
-  // Real-time data (WebSocket-driven)
   connections: ConnectionSnapshot
   logs: LogEntry[]
   trafficHistory: TrafficSample[]
-
-  // UI state
   error: string | null
   busyNet: string | null
   busyConnectionId: string | null
   closingAll: boolean
-
-  // Actions
   setError: (error: string | null) => void
   setBusyNet: (net: string | null) => void
   setBusyConnectionId: (id: string | null) => void
   setClosingAll: (closing: boolean) => void
   clearLogs: () => void
 }
-
-// ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
 
 export const useRdpStore = create<RdpStore>((set) => ({
   engineStatus: { status: 'Connecting' as const, servers: [] },
@@ -51,17 +36,12 @@ export const useRdpStore = create<RdpStore>((set) => ({
   busyNet: null,
   busyConnectionId: null,
   closingAll: false,
-
   setError: (error) => set({ error }),
   setBusyNet: (busyNet) => set({ busyNet }),
   setBusyConnectionId: (busyConnectionId) => set({ busyConnectionId }),
   setClosingAll: (closingAll) => set({ closingAll }),
   clearLogs: () => set({ logs: [] }),
 }))
-
-// ---------------------------------------------------------------------------
-// WebSocket streams (module-level, started once)
-// ---------------------------------------------------------------------------
 
 let lastTrafficSample: {
   totalUpload: number
@@ -98,21 +78,6 @@ function applyConnectionSnapshot(snapshot: ConnectionSnapshot) {
   }))
 }
 
-function connectWebSocket(path: string, onMessage: (data: string) => void) {
-  let socket: WebSocket | null = null
-
-  const connect = () => {
-    socket = new WebSocket(getWebSocketUrl(path))
-    socket.onmessage = (event) => onMessage(String(event.data))
-    socket.onerror = () => socket?.close()
-    socket.onclose = () => {
-      window.setTimeout(connect, 1500)
-    }
-  }
-
-  connect()
-}
-
 let streamsStarted = false
 
 interface StreamDeps {
@@ -125,66 +90,42 @@ interface ServerEvent {
   status?: EngineStatus
 }
 
-function connectSSE(deps: StreamDeps) {
-  let source: EventSource | null = null
-
-  const connect = () => {
-    source = new EventSource('/api/stream/events')
-
-    source.onmessage = (msg) => {
-      try {
-        const data = JSON.parse(msg.data) as ServerEvent
-        switch (data.event) {
-          case 'StatusChanged':
-            if (data.status) {
-              useRdpStore.setState({ engineStatus: data.status })
-            }
-            break
-          case 'ConfigChanged':
-            deps.invalidateQueries([['config']])
-            break
-        }
-      } catch {
-        // ignore malformed events
-      }
-    }
-
-    source.onerror = () => {
-      source?.close()
-      window.setTimeout(connect, 1500)
-    }
-  }
-
-  connect()
-}
-
 export function startStreams(deps: StreamDeps) {
   if (streamsStarted) return
   streamsStarted = true
 
-  // SSE for engine status changes → invalidate queries
-  connectSSE(deps)
-
-  // Connection stream
-  connectWebSocket('/api/stream/connections?patch=true', (data) => {
+  rdpApi.subscribe('engine.events', {}, (payload) => {
     try {
-      const payload = JSON.parse(data) as
-        | { full?: ConnectionSnapshot; patch?: Operation[] }
-        | ConnectionSnapshot
+      const data = payload as ServerEvent
+      switch (data.event) {
+        case 'StatusChanged':
+          if (data.status) {
+            useRdpStore.setState({ engineStatus: data.status })
+          }
+          break
+        case 'ConfigChanged':
+          deps.invalidateQueries([['config']])
+          break
+      }
+    } catch {
+      // ignore malformed events
+    }
+  })
 
-      if ('patch' in payload && Array.isArray(payload.patch)) {
+  rdpApi.subscribe('connections', { patch: true }, (payload) => {
+    try {
+      const typed = payload as { full?: ConnectionSnapshot; patch?: Operation[] } | ConnectionSnapshot
+      if ('patch' in typed && Array.isArray(typed.patch)) {
         const nextSnapshot = applyPatch(
           structuredClone(lastConnectionSnapshot),
-          payload.patch,
+          typed.patch,
           false,
           true,
         ).newDocument as ConnectionSnapshot
         applyConnectionSnapshot(nextSnapshot)
         return
       }
-
-      const snapshot =
-        'full' in payload && payload.full ? payload.full : (payload as ConnectionSnapshot)
+      const snapshot = 'full' in typed && typed.full ? typed.full : (typed as ConnectionSnapshot)
       applyConnectionSnapshot(snapshot)
     } catch (caught) {
       if (deps.getRuntimeState() === 'Running') {
@@ -195,7 +136,6 @@ export function startStreams(deps: StreamDeps) {
     }
   })
 
-  // Load historical logs from file, then connect WebSocket for live stream
   rdpApi.getLogs(500).then((entries) => {
     const historicalLogs: LogEntry[] = entries.map((entry, i) => {
       const parsed = entry as {
@@ -225,8 +165,8 @@ export function startStreams(deps: StreamDeps) {
     // No log file available (non-daemon mode), that's fine
   })
 
-  // Live log stream (appends after historical)
-  connectWebSocket('/api/stream/logs', (data) => {
+  rdpApi.subscribe('logs', {}, (payload) => {
+    const data = typeof payload === 'string' ? payload : JSON.stringify(payload)
     const nextLines = parseLogChunk(data)
     if (nextLines.length > 0) {
       useRdpStore.setState((state) => ({

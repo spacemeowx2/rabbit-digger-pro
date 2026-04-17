@@ -52,7 +52,7 @@ pub(super) enum ApiError {
 }
 
 impl ApiError {
-    fn other<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
+    pub(super) fn other<E: std::error::Error + Send + Sync + 'static>(err: E) -> Self {
         ApiError::Other(Box::new(err))
     }
 }
@@ -212,8 +212,8 @@ pub struct DelayRequest {
 }
 #[derive(Debug, Serialize)]
 pub struct DelayResponse {
-    connect: u64,
-    response: u64,
+    pub(super) connect: u64,
+    pub(super) response: u64,
 }
 pub(super) async fn get_delay(
     Extension(Ctx { rd, .. }): Extension<Ctx>,

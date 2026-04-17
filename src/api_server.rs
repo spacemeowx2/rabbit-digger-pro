@@ -11,16 +11,17 @@ use crate::config::{ConfigManager, ImportSource};
 mod embedded_webui;
 mod handlers;
 mod routes;
+mod rpc;
 
 pub struct ApiServer {
     pub rabbit_digger: RabbitDigger,
     pub config_manager: ConfigManager,
     pub access_token: Option<String>,
     pub web_ui: Option<String>,
-    /// When set, POST /api/config sends ImportSource through this channel
+    /// When set, config.apply sends ImportSource through this channel
     /// instead of spawning start_stream directly.
     pub source_sender: Option<mpsc::Sender<ImportSource>>,
-    /// Path to the daemon log file (JSON lines), for GET /api/logs.
+    /// Path to the daemon log file (JSON lines), for logs.tail.
     pub log_file_path: Option<std::path::PathBuf>,
 }
 
@@ -43,23 +44,86 @@ impl ApiServer {
 #[cfg(all(test, feature = "api_server"))]
 mod tests {
     use super::*;
-    use futures::StreamExt;
-    use serde_json::Value;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_tungstenite::connect_async;
+    use futures::{SinkExt, StreamExt};
+    use serde_json::{json, Value};
+    use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     fn test_http_client() -> reqwest::Client {
         reqwest::Client::builder().no_proxy().build().unwrap()
     }
 
+    async fn rpc_call(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        ws.send(Message::Text(
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value.get("id").and_then(|value| value.as_u64()) == Some(id) {
+                    return value;
+                }
+            }
+        }
+    }
+
+    async fn rpc_notification(
+        ws: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Value {
+        loop {
+            let message = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Message::Text(text) = message {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value.get("method").and_then(|value| value.as_str()) == Some("rpc.subscription")
+                {
+                    return value;
+                }
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn test_api_server_smoke_http() {
+    async fn test_api_server_smoke_rpc() {
         let app = crate::App::new().await.unwrap();
 
-        // Start rabbit-digger with a minimal config so endpoints like /api/config work.
         let mut cfg = rabbit_digger::config::Config::default();
         cfg.id = "test".to_string();
         rabbit_digger::config::init_default_net(&mut cfg.net).unwrap();
+        cfg.server.insert(
+            "echo".to_string(),
+            rabbit_digger::config::Server::new_opt(
+                "echo",
+                serde_json::json!({"bind":"127.0.0.1:0","listen":"local"}),
+            )
+            .unwrap(),
+        );
         app.rd.start(cfg).await.unwrap();
 
         let server = ApiServer {
@@ -71,83 +135,152 @@ mod tests {
             log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{addr}");
+        let ws_base = format!("ws://{addr}");
 
-        let client = test_http_client();
+        let (mut ws, _) = connect_async(format!("{ws_base}/api/rpc")).await.unwrap();
 
-        async fn get_until_ok(client: &reqwest::Client, url: String) -> reqwest::Response {
-            for _ in 0..100 {
-                if let Ok(resp) = client.get(&url).send().await {
-                    if resp.status().is_success() {
-                        return resp;
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-            client.get(&url).send().await.unwrap()
-        }
+        let response = rpc_call(&mut ws, 1, "registry.get", json!({})).await;
+        assert!(response.get("result").is_some());
 
-        let r = get_until_ok(&client, format!("{base}/api/registry")).await;
-        if !r.status().is_success() {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            panic!("/api/registry status={status} body={body}");
-        }
-
-        let r = get_until_ok(&client, format!("{base}/api/config")).await;
-        if !r.status().is_success() {
-            let status = r.status();
-            let body = r.text().await.unwrap_or_default();
-            panic!("/api/config status={status} body={body}");
-        }
-        assert_eq!(
-            r.headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok()),
-            Some("application/json")
-        );
+        let response = rpc_call(&mut ws, 2, "config.get", json!({})).await;
+        assert!(response.get("result").is_some());
 
         let key = format!("test-{}", uuid::Uuid::new_v4());
-        let r = client
-            .put(format!("{base}/api/userdata/{key}"))
-            .body("hello")
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        assert_eq!(v.get("copied").and_then(|n| n.as_u64()), Some(5));
+        let response = rpc_call(
+            &mut ws,
+            3,
+            "userdata.put",
+            json!({ "path": key, "value": "hello" }),
+        )
+        .await;
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|value| value.get("copied"))
+                .and_then(|value| value.as_u64()),
+            Some(5)
+        );
 
-        let r = client
-            .get(format!("{base}/api/userdata/{key}"))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        assert_eq!(v.get("content").and_then(|s| s.as_str()), Some("hello"));
+        let response = rpc_call(&mut ws, 4, "userdata.get", json!({ "path": key })).await;
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|value| value.get("content"))
+                .and_then(|value| value.as_str()),
+            Some("hello")
+        );
 
-        let r = client
-            .get(format!("{base}/api/userdata"))
-            .send()
-            .await
+        let response = rpc_call(&mut ws, 5, "userdata.list", json!({})).await;
+        let keys = response
+            .get("result")
+            .and_then(|value| value.get("keys"))
+            .and_then(|value| value.as_array())
             .unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        let keys = v.get("keys").and_then(|v| v.as_array()).unwrap();
         assert!(keys
             .iter()
             .filter_map(|o| o.get("key").and_then(|k| k.as_str()))
             .any(|k| k == key));
 
-        let r = client
-            .delete(format!("{base}/api/userdata/{key}"))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        assert_eq!(v.get("ok").and_then(|b| b.as_bool()), Some(true));
+        let response = rpc_call(&mut ws, 6, "userdata.delete", json!({ "path": key })).await;
+        assert_eq!(
+            response
+                .get("result")
+                .and_then(|value| value.get("ok"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+
+        let response = rpc_call(
+            &mut ws,
+            7,
+            "net.select",
+            json!({ "net_name": "local", "selected": "local" }),
+        )
+        .await;
+        assert_eq!(response.get("result"), Some(&Value::Null));
+
+        let response = rpc_call(
+            &mut ws,
+            8,
+            "rpc.subscribe",
+            json!({ "topic": "engine.events", "params": {} }),
+        )
+        .await;
+        let engine_subscription = response
+            .get("result")
+            .and_then(|value| value.get("subscription"))
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+        let notification = rpc_notification(&mut ws).await;
+        assert_eq!(
+            notification
+                .get("params")
+                .and_then(|value| value.get("subscription"))
+                .and_then(|value| value.as_str()),
+            Some(engine_subscription.as_str())
+        );
+
+        let response = rpc_call(
+            &mut ws,
+            9,
+            "rpc.subscribe",
+            json!({
+                "topic": "connections",
+                "params": { "patch": true, "without_connections": true }
+            }),
+        )
+        .await;
+        let connection_subscription = response
+            .get("result")
+            .and_then(|value| value.get("subscription"))
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+        let notification = rpc_notification(&mut ws).await;
+        assert_eq!(
+            notification
+                .get("params")
+                .and_then(|value| value.get("subscription"))
+                .and_then(|value| value.as_str()),
+            Some(connection_subscription.as_str())
+        );
+        assert!(notification
+            .get("params")
+            .and_then(|value| value.get("payload"))
+            .and_then(|value| value.get("full"))
+            .is_some());
+
+        let response = rpc_call(
+            &mut ws,
+            10,
+            "rpc.subscribe",
+            json!({ "topic": "logs", "params": {} }),
+        )
+        .await;
+        let log_subscription = response
+            .get("result")
+            .and_then(|value| value.get("subscription"))
+            .and_then(|value| value.as_str())
+            .unwrap()
+            .to_string();
+        crate::log::get_sender()
+            .send(Box::<[u8]>::from(&b"hello"[..]))
+            .ok();
+        let notification = rpc_notification(&mut ws).await;
+        assert_eq!(
+            notification
+                .get("params")
+                .and_then(|value| value.get("subscription"))
+                .and_then(|value| value.as_str()),
+            Some(log_subscription.as_str())
+        );
+        assert!(notification
+            .get("params")
+            .and_then(|value| value.get("payload"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .contains("hello"));
     }
 
     #[tokio::test]
@@ -210,215 +343,18 @@ mod tests {
             log_file_path: None,
         };
         let addr = server.run("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{addr}");
 
         let client = test_http_client();
-
-        let r = client
-            .get(format!("{base}/api/registry"))
+        let unauthorized = client
+            .get(format!("http://{addr}/api/rpc"))
             .send()
             .await
             .unwrap();
-        assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        let r = client
-            .get(format!("{base}/api/registry"))
-            .header(reqwest::header::AUTHORIZATION, "secret")
-            .send()
+        let (_ws, response) = connect_async(format!("ws://{addr}/api/rpc?token=secret"))
             .await
             .unwrap();
-        assert!(r.status().is_success());
-    }
-
-    #[tokio::test]
-    async fn test_api_server_handlers_and_websockets() {
-        let app = crate::App::new().await.unwrap();
-
-        let mut cfg = rabbit_digger::config::Config::default();
-        cfg.id = "test".to_string();
-        rabbit_digger::config::init_default_net(&mut cfg.net).unwrap();
-        cfg.server.insert(
-            "echo".to_string(),
-            rabbit_digger::config::Server::new_opt(
-                "echo",
-                serde_json::json!({"bind":"127.0.0.1:0","listen":"local"}),
-            )
-            .unwrap(),
-        );
-        app.rd.start(cfg).await.unwrap();
-
-        let server = ApiServer {
-            rabbit_digger: app.rd.clone(),
-            config_manager: app.cfg_mgr.clone(),
-            access_token: None,
-            web_ui: None,
-            source_sender: None,
-            log_file_path: None,
-        };
-        let addr = server.run("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{addr}");
-        let ws_base = format!("ws://{addr}");
-
-        let client = test_http_client();
-
-        // Wait for rd to be fully running.
-        for _ in 0..100 {
-            if app.rd.is_running().await {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-
-        // Ensure the local net exists.
-        let local = app.rd.get_net("local").await.unwrap();
-        assert!(local.is_some());
-
-        // post_select (should be ok even if net isn't select)
-        let r = client
-            .post(format!("{base}/api/net/local/select"))
-            .json(&serde_json::json!({"selected": "local"}))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-
-        // get_delay early-return branch (no host/port)
-        let r = client
-            .get(format!(
-                "{base}/api/net/local/delay?url=file%3A%2F%2F%2Ftmp&timeout=1"
-            ))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-
-        // get_userdata not found -> ApiError::NotFound
-        let r = client
-            .get(format!("{base}/api/userdata/does-not-exist"))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
-        let v: Value = r.json().await.unwrap();
-        assert_eq!(v.get("error").and_then(|s| s.as_str()), Some("Not found"));
-
-        // put_userdata invalid UTF-8 -> ApiError::Other
-        let r = client
-            .put(format!("{base}/api/userdata/bad-utf8"))
-            .body(vec![0xff, 0xfe, 0xfd])
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(r.status(), reqwest::StatusCode::INTERNAL_SERVER_ERROR);
-        let v: Value = r.json().await.unwrap();
-        assert!(v.get("error").is_some());
-
-        // delete_conn with random uuid should return a bool
-        let r = client
-            .delete(format!("{base}/api/connection/{}", uuid::Uuid::new_v4()))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let _v: Value = r.json().await.unwrap();
-
-        // delete_connections should return json
-        let r = client
-            .delete(format!("{base}/api/connection"))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        let _v: Value = r.json().await.unwrap();
-
-        // WebSocket: connection stream
-        let (mut ws, _) = connect_async(format!(
-            "{ws_base}/api/stream/connections?patch=true&without_connections=true"
-        ))
-        .await
-        .unwrap();
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let text = match msg {
-            tokio_tungstenite::tungstenite::Message::Text(t) => t,
-            other => panic!("unexpected ws message: {other:?}"),
-        };
-        let v: Value = serde_json::from_str(&text).unwrap();
-        assert!(v.get("full").is_some());
-
-        ws.close(None).await.unwrap();
-
-        // WebSocket: logs stream
-        let (mut logs_ws, _) = connect_async(format!("{ws_base}/api/stream/logs"))
-            .await
-            .unwrap();
-        crate::log::get_sender()
-            .send(Box::<[u8]>::from(&b"hello"[..]))
-            .ok();
-
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(3), logs_ws.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        let text = match msg {
-            tokio_tungstenite::tungstenite::Message::Text(t) => t,
-            other => panic!("unexpected ws message: {other:?}"),
-        };
-        assert!(text.contains("hello"));
-        logs_ws.close(None).await.unwrap();
-
-        // get_delay success path: connect, write request, and receive 1 byte
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let delay_addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut s, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 1024];
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_millis(200), s.read(&mut buf)).await;
-            let _ = s.write_all(b"HTTP/1.1 200 OK\r\n\r\nX").await;
-        });
-
-        let mut url = reqwest::Url::parse(&format!("{base}/api/net/local/delay")).unwrap();
-        url.query_pairs_mut()
-            .append_pair("url", &format!("http://127.0.0.1:{}/", delay_addr.port()))
-            .append_pair("timeout", "5000");
-        let r = client.get(url).send().await.unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        assert!(v.is_object());
-        assert!(v.get("connect").is_some());
-        assert!(v.get("response").is_some());
-
-        // get_delay timeout path -> null
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let delay_addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut s, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let _ = s.write_all(b"X").await;
-        });
-        let mut url = reqwest::Url::parse(&format!("{base}/api/net/local/delay")).unwrap();
-        url.query_pairs_mut()
-            .append_pair("url", &format!("http://127.0.0.1:{}/", delay_addr.port()))
-            .append_pair("timeout", "5");
-        let r = client.get(url).send().await.unwrap();
-        assert!(r.status().is_success());
-        let v: Value = r.json().await.unwrap();
-        assert!(v.is_null());
-
-        // post_config with ImportSource::Text (do this last; it stops/restarts rd)
-        let new_cfg = "id: test2\nnet: {}\nserver: {}\n";
-        let r = client
-            .post(format!("{base}/api/config"))
-            .json(&serde_json::json!({"text": new_cfg}))
-            .send()
-            .await
-            .unwrap();
-        assert!(r.status().is_success());
-        assert_eq!(r.text().await.unwrap(), "null");
+        assert_eq!(response.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
     }
 }
