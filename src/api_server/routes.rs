@@ -21,7 +21,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 
-use super::{handlers::Ctx, rpc, ApiServer};
+use super::{rpc, shared::Ctx, ApiServer};
 
 impl ApiServer {
     pub async fn routes(&self) -> Result<Router> {

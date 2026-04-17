@@ -9,9 +9,9 @@ use crate::config::{ConfigManager, ImportSource};
 
 #[cfg(feature = "webui_embed")]
 mod embedded_webui;
-mod handlers;
 mod routes;
 mod rpc;
+mod shared;
 
 pub struct ApiServer {
     pub rabbit_digger: RabbitDigger,

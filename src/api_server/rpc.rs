@@ -23,7 +23,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::IntervalStream;
 
-use super::handlers::{ApiError, ConnectionQuery, Ctx, DelayResponse, MaybePatch};
+use super::shared::{ApiError, ConnectionQuery, Ctx, DelayResponse, MaybePatch};
 use crate::{
     config::{ImportSource, SelectMap},
     storage::Storage,
