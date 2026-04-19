@@ -106,6 +106,9 @@ struct ProxyGroup {
     #[serde(rename = "type")]
     proxy_group_type: String,
     proxies: Vec<String>,
+    url: Option<String>,
+    interval: Option<u64>,
+    tolerance: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -364,19 +367,25 @@ impl Clash {
                     "list": net_list,
                 }),
             ),
-            "url-test" | "fallback" => {
-                tracing::warn!(
-                    "Unsupported proxy group type: {}, will use select as fallback.",
-                    proxy_group_type
-                );
-                Net::new(
-                    "select",
-                    json!({
-                        "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
-                        "list": net_list,
-                    }),
-                )
-            }
+            "url-test" => Net::new(
+                "url-test",
+                json!({
+                    "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
+                    "list": net_list,
+                    "url": p.url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string()),
+                    "interval": p.interval.unwrap_or(300),
+                    "tolerance": p.tolerance.unwrap_or(0),
+                }),
+            ),
+            "fallback" => Net::new(
+                "fallback",
+                json!({
+                    "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
+                    "list": net_list,
+                    "url": p.url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string()),
+                    "interval": p.interval.unwrap_or(300),
+                }),
+            ),
             "relay" => {
                 let net = net_list.iter().try_fold(
                     Net::new(
@@ -925,6 +934,9 @@ mod tests {
             name: "g".to_string(),
             proxy_group_type: "select".to_string(),
             proxies: vec!["a".to_string(), "b".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
         };
         assert_eq!(
             c.proxy_group_to_net(pg_select, &proxy_map)
@@ -937,18 +949,42 @@ mod tests {
             name: "g".to_string(),
             proxy_group_type: "url-test".to_string(),
             proxies: vec!["a".to_string()],
+            url: Some("http://example.com/test".to_string()),
+            interval: Some(42),
+            tolerance: Some(7),
         };
+        let net = c.proxy_group_to_net(pg_urltest, &proxy_map).unwrap();
+        assert_eq!(net.net_type, "url-test");
         assert_eq!(
-            c.proxy_group_to_net(pg_urltest, &proxy_map)
-                .unwrap()
-                .net_type,
-            "select"
+            net.opt.get("url").and_then(|v| v.as_str()),
+            Some("http://example.com/test")
         );
+        assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(42));
+        assert_eq!(net.opt.get("tolerance").and_then(|v| v.as_u64()), Some(7));
+
+        let pg_fallback = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "fallback".to_string(),
+            proxies: vec!["a".to_string()],
+            url: Some("http://example.com/fallback".to_string()),
+            interval: Some(24),
+            tolerance: None,
+        };
+        let net = c.proxy_group_to_net(pg_fallback, &proxy_map).unwrap();
+        assert_eq!(net.net_type, "fallback");
+        assert_eq!(
+            net.opt.get("url").and_then(|v| v.as_str()),
+            Some("http://example.com/fallback")
+        );
+        assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(24));
 
         let pg_relay_missing_proxy = ProxyGroup {
             name: "g".to_string(),
             proxy_group_type: "relay".to_string(),
             proxies: vec!["b".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
         };
         assert!(c
             .proxy_group_to_net(pg_relay_missing_proxy, &proxy_map)
@@ -958,6 +994,9 @@ mod tests {
             name: "g".to_string(),
             proxy_group_type: "bad".to_string(),
             proxies: vec!["a".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
         };
         assert!(c.proxy_group_to_net(pg_bad, &proxy_map).is_err());
     }
