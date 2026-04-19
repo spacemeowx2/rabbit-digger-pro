@@ -1,0 +1,22 @@
+id: ui-select-demo
+net:
+  local:
+    type: local
+  direct-a:
+    type: alias
+    net: local
+  direct-b:
+    type: alias
+    net: local
+  manual-group:
+    type: select
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+server:
+  mixed:
+    type: http+socks5
+    bind: 127.0.0.1:11080
+    net: manual-group
+    listen: local
