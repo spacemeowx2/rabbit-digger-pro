@@ -53,7 +53,7 @@ jobs:
             release_name: rabbit-digger-pro-windows-amd64.exe
           - os: macos-latest
             artifact_name: rabbit-digger-pro
-            release_name: rabbit-digger-pro-macos-amd64
+            release_name: rabbit-digger-pro-macos-arm64
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
