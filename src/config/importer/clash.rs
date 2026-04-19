@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use futures::{stream, StreamExt};
+use futures::{future::BoxFuture, stream, StreamExt, TryStreamExt};
 use rabbit_digger::{
     config::{Config, Net},
     rd_std::rule::config::{
@@ -413,108 +413,154 @@ impl Clash {
         cache: &dyn Storage,
         rule_providers: &BTreeMap<String, RuleProvider>,
         oom_lock: &Mutex<()>,
-    ) -> Result<rule_config::RuleItem> {
-        let bad_rule = || anyhow!("Bad rule.");
-        let mut ps = r.split(',');
-        let mut ps_next = || ps.next().ok_or_else(bad_rule);
-        let rule_type = ps_next()?;
-        let item = match rule_type {
-            "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN" => {
-                let domain = ps_next()?.to_string();
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                let method = match rule_type {
-                    "DOMAIN-SUFFIX" => DomainMatcherMethod::Suffix,
-                    "DOMAIN-KEYWORD" => DomainMatcherMethod::Keyword,
-                    "DOMAIN" => DomainMatcherMethod::Match,
-                    _ => return Err(bad_rule()),
-                };
-                rule_config::RuleItem {
-                    target,
-                    matcher: Matcher::Domain(DomainMatcher {
-                        method,
-                        domain: domain.into(),
-                    }),
-                }
-            }
-            "IP-CIDR" | "IP-CIDR6" => {
-                let ip_cidr = ps_next()?.to_string();
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                rule_config::RuleItem {
-                    target,
-                    matcher: Matcher::IpCidr(IpCidrMatcher {
-                        ipcidr: IpCidr::from_str(&ip_cidr)?.into(),
-                    }),
-                }
-            }
-            "SRC-IP-CIDR" => {
-                let ip_cidr = ps_next()?.to_string();
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                rule_config::RuleItem {
-                    target,
-                    matcher: Matcher::SrcIpCidr(SrcIpCidrMatcher {
-                        ipcidr: IpCidr::from_str(&ip_cidr)?.into(),
-                    }),
-                }
-            }
-            "MATCH" => {
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                rule_config::RuleItem {
-                    target,
-                    matcher: Matcher::Any(AnyMatcher {}),
-                }
-            }
-            "GEOIP" => {
-                let region = ps_next()?.to_string();
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                rule_config::RuleItem {
-                    target,
-                    matcher: Matcher::GeoIp(GeoIpMatcher { country: region }),
-                }
-            }
-            "RULE-SET" => {
-                let set = ps_next()?.to_string();
-                let target = NetRef::new(self.get_target(ps_next()?)?.into());
-                let rule_provider = rule_providers.get(&set).ok_or_else(bad_rule)?;
+    ) -> Result<Vec<rule_config::RuleItem>> {
+        self.rule_to_rule_with_target(r, None, cache, rule_providers, oom_lock)
+            .await
+    }
 
-                let source = match rule_provider.rule_type.as_ref() {
-                    "http" => ImportSource::new_poll(
-                        rule_provider.url.to_string(),
-                        Some(rule_provider.interval),
-                    ),
-                    "file" => ImportSource::new_path(PathBuf::from(rule_provider.path.to_string())),
-                    _ => return Err(bad_rule()),
-                };
-
-                let source_str = source.get_content(cache).await?;
-                let _guard = oom_lock.lock().await;
-
-                let RuleSet { payload } = serde_yaml::from_str(&source_str)?;
-                match rule_provider.behavior.as_ref() {
-                    "domain" => rule_config::RuleItem {
-                        target: target.clone(),
+    fn rule_to_rule_with_target<'a>(
+        &'a self,
+        r: String,
+        inherited_target: Option<NetRef>,
+        cache: &'a dyn Storage,
+        rule_providers: &'a BTreeMap<String, RuleProvider>,
+        oom_lock: &'a Mutex<()>,
+    ) -> BoxFuture<'a, Result<Vec<rule_config::RuleItem>>> {
+        Box::pin(async move {
+            let bad_rule = || anyhow!("Bad rule.");
+            let mut ps = r.split(',');
+            let mut ps_next = || ps.next().ok_or_else(bad_rule);
+            let rule_type = ps_next()?;
+            let items = match rule_type {
+                "DOMAIN-SUFFIX" | "DOMAIN-KEYWORD" | "DOMAIN" => {
+                    let domain = ps_next()?.to_string();
+                    let target = match inherited_target.clone() {
+                        Some(target) => target,
+                        None => NetRef::new(self.get_target(ps_next()?)?.into()),
+                    };
+                    let method = match rule_type {
+                        "DOMAIN-SUFFIX" => DomainMatcherMethod::Suffix,
+                        "DOMAIN-KEYWORD" => DomainMatcherMethod::Keyword,
+                        "DOMAIN" => DomainMatcherMethod::Match,
+                        _ => return Err(bad_rule()),
+                    };
+                    vec![rule_config::RuleItem {
+                        target,
                         matcher: Matcher::Domain(DomainMatcher {
-                            method: DomainMatcherMethod::Match,
-                            domain: payload.into(),
+                            method,
+                            domain: domain.into(),
                         }),
-                    },
-                    "ipcidr" => rule_config::RuleItem {
-                        target: target.clone(),
-                        matcher: Matcher::IpCidr(IpCidrMatcher {
-                            ipcidr: payload
-                                .into_iter()
-                                .map(|i| IpCidr::from_str(&i))
-                                .collect::<rd_interface::Result<Vec<_>>>()?
-                                .into(),
-                        }),
-                    },
-                    // TODO: support classical behavior
-                    _ => return Err(bad_rule()),
+                    }]
                 }
-            }
-            _ => return Err(anyhow!("Rule prefix {} is not supported", rule_type)),
-        };
+                "IP-CIDR" | "IP-CIDR6" => {
+                    let ip_cidr = ps_next()?.to_string();
+                    let target = match inherited_target.clone() {
+                        Some(target) => target,
+                        None => NetRef::new(self.get_target(ps_next()?)?.into()),
+                    };
+                    vec![rule_config::RuleItem {
+                        target,
+                        matcher: Matcher::IpCidr(IpCidrMatcher {
+                            ipcidr: IpCidr::from_str(&ip_cidr)?.into(),
+                        }),
+                    }]
+                }
+                "SRC-IP-CIDR" => {
+                    let ip_cidr = ps_next()?.to_string();
+                    let target = match inherited_target.clone() {
+                        Some(target) => target,
+                        None => NetRef::new(self.get_target(ps_next()?)?.into()),
+                    };
+                    vec![rule_config::RuleItem {
+                        target,
+                        matcher: Matcher::SrcIpCidr(SrcIpCidrMatcher {
+                            ipcidr: IpCidr::from_str(&ip_cidr)?.into(),
+                        }),
+                    }]
+                }
+                "MATCH" => {
+                    let target = match inherited_target.clone() {
+                        Some(target) => target,
+                        None => NetRef::new(self.get_target(ps_next()?)?.into()),
+                    };
+                    vec![rule_config::RuleItem {
+                        target,
+                        matcher: Matcher::Any(AnyMatcher {}),
+                    }]
+                }
+                "GEOIP" => {
+                    let region = ps_next()?.to_string();
+                    let target = match inherited_target.clone() {
+                        Some(target) => target,
+                        None => NetRef::new(self.get_target(ps_next()?)?.into()),
+                    };
+                    vec![rule_config::RuleItem {
+                        target,
+                        matcher: Matcher::GeoIp(GeoIpMatcher { country: region }),
+                    }]
+                }
+                "RULE-SET" => {
+                    let set = ps_next()?.to_string();
+                    let target = NetRef::new(self.get_target(ps_next()?)?.into());
+                    let rule_provider = rule_providers.get(&set).ok_or_else(bad_rule)?;
 
-        Ok(item)
+                    let source = match rule_provider.rule_type.as_ref() {
+                        "http" => ImportSource::new_poll(
+                            rule_provider.url.to_string(),
+                            Some(rule_provider.interval),
+                        ),
+                        "file" => {
+                            ImportSource::new_path(PathBuf::from(rule_provider.path.to_string()))
+                        }
+                        _ => return Err(bad_rule()),
+                    };
+
+                    let source_str = source.get_content(cache).await?;
+                    let _guard = oom_lock.lock().await;
+
+                    let RuleSet { payload } = serde_yaml::from_str(&source_str)?;
+                    match rule_provider.behavior.as_ref() {
+                        "domain" => vec![rule_config::RuleItem {
+                            target: target.clone(),
+                            matcher: Matcher::Domain(DomainMatcher {
+                                method: DomainMatcherMethod::Match,
+                                domain: payload.into(),
+                            }),
+                        }],
+                        "ipcidr" => vec![rule_config::RuleItem {
+                            target: target.clone(),
+                            matcher: Matcher::IpCidr(IpCidrMatcher {
+                                ipcidr: payload
+                                    .into_iter()
+                                    .map(|i| IpCidr::from_str(&i))
+                                    .collect::<rd_interface::Result<Vec<_>>>()?
+                                    .into(),
+                            }),
+                        }],
+                        "classical" => {
+                            let mut items = Vec::new();
+                            for rule in payload {
+                                items.extend(
+                                    self.rule_to_rule_with_target(
+                                        rule,
+                                        Some(target.clone()),
+                                        cache,
+                                        rule_providers,
+                                        oom_lock,
+                                    )
+                                    .await?,
+                                );
+                            }
+                            items
+                        }
+                        _ => return Err(bad_rule()),
+                    }
+                }
+                _ => return Err(anyhow!("Rule prefix {} is not supported", rule_type)),
+            };
+
+            Ok(items)
+        })
     }
 
     fn proxy_group_name(&self, pg: impl AsRef<str>) -> String {
@@ -588,21 +634,22 @@ impl Importer for Clash {
             let rule = stream::iter(clash_config.rules)
                 .map(|r| self.rule_to_rule(r, cache, &clash_config.rule_providers, &oom_lock))
                 .buffered(10)
-                .flat_map(stream::iter)
-                .fold(
+                .try_fold(
                     Vec::<rule_config::RuleItem>::new(),
-                    |mut state, item| async move {
-                        let mut merged = false;
-                        if let Some(last) = state.last_mut() {
-                            merged = last.merge(&item);
+                    |mut state, items| async move {
+                        for item in items {
+                            let mut merged = false;
+                            if let Some(last) = state.last_mut() {
+                                merged = last.merge(&item);
+                            }
+                            if !merged {
+                                state.push(item);
+                            }
                         }
-                        if !merged {
-                            state.push(item);
-                        }
-                        state
+                        Ok(state)
                     },
                 )
-                .await;
+                .await?;
 
             config
                 .net
@@ -932,7 +979,8 @@ mod tests {
             )
             .await
             .unwrap();
-        match item.matcher {
+        assert_eq!(item.len(), 1);
+        match item.into_iter().next().unwrap().matcher {
             Matcher::Domain(d) => assert!(matches!(d.method, DomainMatcherMethod::Suffix)),
             _ => panic!("unexpected matcher"),
         }
@@ -946,7 +994,11 @@ mod tests {
             )
             .await
             .unwrap();
-        matches!(item.matcher, Matcher::IpCidr(_));
+        assert_eq!(item.len(), 1);
+        assert!(matches!(
+            item.into_iter().next().unwrap().matcher,
+            Matcher::IpCidr(_)
+        ));
 
         let item = c
             .rule_to_rule(
@@ -957,7 +1009,11 @@ mod tests {
             )
             .await
             .unwrap();
-        matches!(item.matcher, Matcher::SrcIpCidr(_));
+        assert_eq!(item.len(), 1);
+        assert!(matches!(
+            item.into_iter().next().unwrap().matcher,
+            Matcher::SrcIpCidr(_)
+        ));
 
         let item = c
             .rule_to_rule(
@@ -968,7 +1024,11 @@ mod tests {
             )
             .await
             .unwrap();
-        matches!(item.matcher, Matcher::Any(_));
+        assert_eq!(item.len(), 1);
+        assert!(matches!(
+            item.into_iter().next().unwrap().matcher,
+            Matcher::Any(_)
+        ));
 
         let item = c
             .rule_to_rule(
@@ -979,7 +1039,11 @@ mod tests {
             )
             .await
             .unwrap();
-        matches!(item.matcher, Matcher::GeoIp(_));
+        assert_eq!(item.len(), 1);
+        assert!(matches!(
+            item.into_iter().next().unwrap().matcher,
+            Matcher::GeoIp(_)
+        ));
 
         let mut rules = BTreeMap::new();
         let mut tmp = NamedTempFile::new().unwrap();
@@ -1006,12 +1070,107 @@ mod tests {
             .await
             .unwrap();
 
-        match item.matcher {
+        assert_eq!(item.len(), 1);
+        match item.into_iter().next().unwrap().matcher {
             Matcher::Domain(d) => {
                 assert!(matches!(d.method, DomainMatcherMethod::Match));
                 assert!(d.domain.len() >= 2);
             }
             _ => panic!("unexpected matcher"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_rule_to_rule_rule_set_classical_inherits_outer_target() {
+        let mut c = base_clash();
+        c.name_map.insert("ProxyA".to_string(), "pA".to_string());
+
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        let oom_lock = Mutex::new(());
+
+        let mut rules = BTreeMap::new();
+        let mut tmp = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut tmp,
+            b"payload:\n  - DOMAIN-SUFFIX,example.com\n  - GEOIP,CN\n",
+        )
+        .unwrap();
+
+        rules.insert(
+            "set1".to_string(),
+            RuleProvider {
+                rule_type: "file".to_string(),
+                behavior: "classical".to_string(),
+                url: "".to_string(),
+                path: tmp.path().to_string_lossy().to_string(),
+                interval: 1,
+            },
+        );
+
+        let items = c
+            .rule_to_rule(
+                "RULE-SET,set1,ProxyA".to_string(),
+                &cache,
+                &rules,
+                &oom_lock,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert!(items.iter().all(|item| item.target.represent() == "pA"));
+        assert!(matches!(items[0].matcher, Matcher::Domain(_)));
+        assert!(matches!(items[1].matcher, Matcher::GeoIp(_)));
+    }
+
+    #[tokio::test]
+    async fn test_process_flattens_classical_rule_set_rules() {
+        let mut clash = base_clash();
+        clash.rule_name = Some("rules".to_string());
+
+        let mut tmp = NamedTempFile::new().unwrap();
+        std::io::Write::write_all(
+            &mut tmp,
+            b"payload:\n  - DOMAIN-SUFFIX,example.com\n  - DOMAIN-SUFFIX,example.org\n",
+        )
+        .unwrap();
+
+        let content = format!(
+            r#"proxies:
+  - name: ProxyA
+    type: direct
+proxy-groups: []
+rules:
+  - RULE-SET,set1,ProxyA
+rule-providers:
+  set1:
+    type: file
+    behavior: classical
+    path: {}
+    url: ""
+    interval: 1
+"#,
+            tmp.path().display()
+        );
+
+        let mut config = Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        clash.process(&mut config, &content, &cache).await.unwrap();
+
+        let rule_net = config.net.get("rules").unwrap();
+        assert_eq!(rule_net.net_type, "rule");
+
+        let rule = rule_net
+            .opt
+            .get("rule")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        assert_eq!(rule.len(), 1);
+
+        let domains = rule[0]
+            .get("domain")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        assert_eq!(domains.len(), 2);
     }
 }
