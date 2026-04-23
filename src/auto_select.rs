@@ -8,6 +8,8 @@ use tokio::{
 
 pub(crate) const DEFAULT_TEST_URL: &str = "http://www.gstatic.com/generate_204";
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+pub(crate) const DEFAULT_TEST_TIMEOUT_MS: u64 = 5_000;
+pub(crate) const DEFAULT_MAX_FAILED_TIMES: u32 = 5;
 
 pub(crate) fn default_test_url() -> String {
     DEFAULT_TEST_URL.to_string()
@@ -23,6 +25,8 @@ pub(crate) enum AutoSelectMode {
 struct AutoSelectState {
     selected_idx: usize,
     last_checked_at: Option<Instant>,
+    failed_times: u32,
+    failed_time: Option<Instant>,
 }
 
 pub(crate) struct AutoSelectCore {
@@ -31,6 +35,8 @@ pub(crate) struct AutoSelectCore {
     test_url: Url,
     interval: Duration,
     tolerance: u64,
+    test_timeout: Duration,
+    max_failed_times: u32,
     state: Mutex<AutoSelectState>,
 }
 
@@ -42,6 +48,8 @@ impl AutoSelectCore {
         url: String,
         interval: u64,
         tolerance: u64,
+        test_timeout: u64,
+        max_failed_times: u32,
     ) -> rd_interface::Result<Self> {
         if list.is_empty() {
             return Err(Error::other(format!("{mode:?} list is empty")));
@@ -61,9 +69,21 @@ impl AutoSelectCore {
             test_url,
             interval: Duration::from_secs(interval),
             tolerance,
+            test_timeout: Duration::from_millis(if test_timeout == 0 {
+                DEFAULT_TEST_TIMEOUT_MS
+            } else {
+                test_timeout
+            }),
+            max_failed_times: if max_failed_times == 0 {
+                DEFAULT_MAX_FAILED_TIMES
+            } else {
+                max_failed_times
+            },
             state: Mutex::new(AutoSelectState {
                 selected_idx,
                 last_checked_at: None,
+                failed_times: 0,
+                failed_time: None,
             }),
         })
     }
@@ -94,6 +114,40 @@ impl AutoSelectCore {
 
     pub(crate) async fn current_net(&self) -> rd_interface::Result<Net> {
         Ok(self.list[self.current_index().await?].clone())
+    }
+
+    pub(crate) async fn on_operation_success(&self) {
+        let mut state = self.state.lock().await;
+        state.failed_times = 0;
+        state.failed_time = None;
+    }
+
+    pub(crate) async fn on_operation_failure(&self, err: &rd_interface::Error) {
+        let mut state = self.state.lock().await;
+        let err = err.to_string();
+        if err.contains("connection refused") {
+            state.last_checked_at = None;
+            state.failed_times = 0;
+            state.failed_time = None;
+            return;
+        }
+
+        let now = Instant::now();
+        match state.failed_time {
+            Some(first_failed_at) if first_failed_at.elapsed() <= self.test_timeout => {
+                state.failed_times += 1;
+            }
+            _ => {
+                state.failed_times = 1;
+                state.failed_time = Some(now);
+            }
+        }
+
+        if state.failed_times >= self.max_failed_times {
+            state.last_checked_at = None;
+            state.failed_times = 0;
+            state.failed_time = None;
+        }
     }
 
     async fn pick_fallback_index(&self, current_idx: usize) -> rd_interface::Result<usize> {

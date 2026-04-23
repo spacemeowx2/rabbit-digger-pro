@@ -109,6 +109,10 @@ struct ProxyGroup {
     url: Option<String>,
     interval: Option<u64>,
     tolerance: Option<u64>,
+    #[serde(rename = "test-timeout")]
+    test_timeout: Option<u64>,
+    #[serde(rename = "max-failed-times")]
+    max_failed_times: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -375,6 +379,8 @@ impl Clash {
                     "url": p.url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string()),
                     "interval": p.interval.unwrap_or(300),
                     "tolerance": p.tolerance.unwrap_or(0),
+                    "test_timeout": p.test_timeout.unwrap_or(5000),
+                    "max_failed_times": p.max_failed_times.unwrap_or(5),
                 }),
             ),
             "fallback" => Net::new(
@@ -384,6 +390,8 @@ impl Clash {
                     "list": net_list,
                     "url": p.url.unwrap_or_else(|| "http://www.gstatic.com/generate_204".to_string()),
                     "interval": p.interval.unwrap_or(300),
+                    "test_timeout": p.test_timeout.unwrap_or(5000),
+                    "max_failed_times": p.max_failed_times.unwrap_or(5),
                 }),
             ),
             "relay" => {
@@ -937,6 +945,8 @@ mod tests {
             url: None,
             interval: None,
             tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert_eq!(
             c.proxy_group_to_net(pg_select, &proxy_map)
@@ -952,6 +962,8 @@ mod tests {
             url: Some("http://example.com/test".to_string()),
             interval: Some(42),
             tolerance: Some(7),
+            test_timeout: Some(1234),
+            max_failed_times: Some(3),
         };
         let net = c.proxy_group_to_net(pg_urltest, &proxy_map).unwrap();
         assert_eq!(net.net_type, "url-test");
@@ -961,6 +973,14 @@ mod tests {
         );
         assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(42));
         assert_eq!(net.opt.get("tolerance").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(
+            net.opt.get("test_timeout").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
+        assert_eq!(
+            net.opt.get("max_failed_times").and_then(|v| v.as_u64()),
+            Some(3)
+        );
 
         let pg_fallback = ProxyGroup {
             name: "g".to_string(),
@@ -969,6 +989,8 @@ mod tests {
             url: Some("http://example.com/fallback".to_string()),
             interval: Some(24),
             tolerance: None,
+            test_timeout: Some(2345),
+            max_failed_times: Some(4),
         };
         let net = c.proxy_group_to_net(pg_fallback, &proxy_map).unwrap();
         assert_eq!(net.net_type, "fallback");
@@ -977,6 +999,14 @@ mod tests {
             Some("http://example.com/fallback")
         );
         assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(24));
+        assert_eq!(
+            net.opt.get("test_timeout").and_then(|v| v.as_u64()),
+            Some(2345)
+        );
+        assert_eq!(
+            net.opt.get("max_failed_times").and_then(|v| v.as_u64()),
+            Some(4)
+        );
 
         let pg_relay_missing_proxy = ProxyGroup {
             name: "g".to_string(),
@@ -985,6 +1015,8 @@ mod tests {
             url: None,
             interval: None,
             tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert!(c
             .proxy_group_to_net(pg_relay_missing_proxy, &proxy_map)
@@ -997,6 +1029,8 @@ mod tests {
             url: None,
             interval: None,
             tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert!(c.proxy_group_to_net(pg_bad, &proxy_map).is_err());
     }
