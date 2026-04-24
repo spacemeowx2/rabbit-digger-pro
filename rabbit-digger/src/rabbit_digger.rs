@@ -38,6 +38,16 @@ mod running;
 pub struct ServerSnapshot {
     pub name: String,
     pub server_type: String,
+    pub status: ServerRuntimeStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ServerRuntimeStatus {
+    Running,
+    Stopped,
+    Error,
 }
 
 /// Engine status — the single source of truth, broadcast via SSE.
@@ -149,6 +159,26 @@ impl RabbitDigger {
         let _ = self.inner.event_tx.send(event);
     }
 
+    fn server_error_message(name: &str, error: &anyhow::Error) -> Option<String> {
+        match error.downcast_ref::<JoinError>() {
+            Some(join) if join.is_cancelled() => None,
+            Some(join) => Some(format!("Server {name} task failed: {join}")),
+            None => Some(format!("Server {name} stopped with error: {error:#}")),
+        }
+    }
+
+    fn server_snapshots(servers: &BTreeMap<String, ServerInfo>) -> Vec<ServerSnapshot> {
+        servers
+            .iter()
+            .map(|(name, info)| ServerSnapshot {
+                name: name.clone(),
+                server_type: info.running_server.server_type().to_string(),
+                status: info.status.clone(),
+                message: info.message.clone(),
+            })
+            .collect()
+    }
+
     /// Get the current engine status.
     pub fn status(&self) -> EngineStatus {
         self.inner.current_status.read().unwrap().clone()
@@ -216,8 +246,9 @@ impl RabbitDigger {
         {
             for (name, info) in servers {
                 if let Some(Err(e)) = info.running_server.take_result().await {
-                    if !e.is::<JoinError>() {
-                        tracing::warn!("Server {} stopped with error: {:?}", name, e);
+                    let message = Self::server_error_message(name, &e);
+                    if let Some(message) = message {
+                        tracing::warn!("{message}");
                     }
                 }
             }
@@ -225,6 +256,49 @@ impl RabbitDigger {
 
         *state = State::WaitConfig;
         self.set_status(EngineStatus::Idle);
+    }
+
+    async fn collect_finished_servers(&self) {
+        let snapshots = {
+            let mut state = self.inner.state.write().await;
+            let State::Running(Running {
+                entities: RunningEntities { servers, .. },
+                ..
+            }) = &mut *state
+            else {
+                return;
+            };
+
+            let mut changed = false;
+            for (name, info) in servers.iter_mut() {
+                match info.running_server.take_result_if_finished().await {
+                    Some(Ok(())) => {
+                        info.status = ServerRuntimeStatus::Stopped;
+                        info.message = Some(format!("Server {name} stopped"));
+                        changed = true;
+                    }
+                    Some(Err(error)) => {
+                        let message = Self::server_error_message(name, &error)
+                            .unwrap_or_else(|| format!("Server {name} stopped"));
+                        tracing::warn!("{message}");
+                        info.status = ServerRuntimeStatus::Error;
+                        info.message = Some(message);
+                        changed = true;
+                    }
+                    None => {}
+                }
+            }
+
+            if changed {
+                Some(Self::server_snapshots(servers))
+            } else {
+                None
+            }
+        };
+
+        if let Some(servers) = snapshots {
+            self.set_status(EngineStatus::Running { servers });
+        }
     }
 
     // get current connection state
@@ -252,7 +326,7 @@ impl RabbitDigger {
         });
         tracing::debug!("Registry:\n{}", self.registry);
 
-        let entities = self
+        let mut entities = self
             .registry
             .build_entities(&mut config, &inner.conn_mgr)
             .context("Failed to build server")?;
@@ -270,23 +344,36 @@ impl RabbitDigger {
         // Create engine context with side effect manager for crash recovery
         let se_path_str = inner.side_effects_path.to_string_lossy().to_string();
 
-        for ServerInfo { running_server, .. } in entities.servers.values() {
+        for info in entities.servers.values_mut() {
             let ctx = rd_interface::EngineContext {
                 side_effects: Arc::new(tokio::sync::Mutex::new(
                     rd_interface::SideEffectManager::new(&se_path_str),
                 )),
             };
-            running_server.start(ctx).await?;
+            info.running_server.start(ctx).await?;
+            info.status = ServerRuntimeStatus::Running;
+            info.message = None;
         }
 
-        let servers: Vec<ServerSnapshot> = entities
-            .servers
-            .iter()
-            .map(|(name, info)| ServerSnapshot {
-                name: name.clone(),
-                server_type: info.running_server.server_type().to_string(),
-            })
-            .collect();
+        yield_now().await;
+        for (name, info) in entities.servers.iter_mut() {
+            match info.running_server.take_result_if_finished().await {
+                Some(Ok(())) => {
+                    info.status = ServerRuntimeStatus::Stopped;
+                    info.message = Some(format!("Server {name} stopped during startup"));
+                }
+                Some(Err(error)) => {
+                    let message = Self::server_error_message(name, &error)
+                        .unwrap_or_else(|| format!("Server {name} stopped during startup"));
+                    tracing::warn!("{message}");
+                    info.status = ServerRuntimeStatus::Error;
+                    info.message = Some(message);
+                }
+                None => {}
+            }
+        }
+
+        let servers = Self::server_snapshots(&entities.servers);
 
         *state = State::Running(Running {
             config: RwLock::new(SerializedConfig {
@@ -350,7 +437,7 @@ impl RabbitDigger {
                     // A server exited first — drain and wait for next config
                     Either::Left(((), cfg_fut)) => {
                         tracing::info!("Server exited, waiting for next config...");
-                        self.drain().await;
+                        self.collect_finished_servers().await;
                         cfg_fut.await
                     }
                     // New config arrived first
@@ -483,6 +570,8 @@ pub struct ServerInfo {
     name: String,
     running_server: RunningServer,
     config: Value,
+    status: ServerRuntimeStatus,
+    message: Option<String>,
 }
 
 struct ServerList<'a>(&'a BTreeMap<String, ServerInfo>);
@@ -570,6 +659,8 @@ impl Registry {
                         name: server_name.to_string(),
                         running_server: server,
                         config: i.opt.clone(),
+                        status: ServerRuntimeStatus::Stopped,
+                        message: None,
                     },
                 );
                 Ok(()) as Result<()>

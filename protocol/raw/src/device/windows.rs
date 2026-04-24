@@ -18,8 +18,12 @@ static WINTUN: OnceCell<Wintun> = OnceCell::new();
 const POOL_NAME: &'static str = "rabbit-digger-pro";
 const DEVICE_NAME: &'static str = "rabbit digger pro";
 
-fn get_wintun() -> &'static Wintun {
-    WINTUN.get_or_init(|| unsafe { wintun::load() }.expect("Failed to load wintun.dll"))
+fn get_wintun() -> Result<&'static Wintun> {
+    WINTUN.get_or_try_init(|| {
+        unsafe { wintun::load() }.map_err(|error| {
+            rd_interface::Error::other(format!("Failed to load wintun.dll: {error}"))
+        })
+    })
 }
 
 pub fn get_tun(cfg: TunTapSetup) -> Result<ChannelCapture> {
@@ -27,9 +31,10 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<ChannelCapture> {
         return Err(Error::Other("On windows only support tun".into()));
     }
 
-    let adapter = match Adapter::open(get_wintun(), DEVICE_NAME) {
+    let wintun = get_wintun()?;
+    let adapter = match Adapter::open(wintun, DEVICE_NAME) {
         Ok(a) => a,
-        Err(_) => Adapter::create(&get_wintun(), POOL_NAME, DEVICE_NAME, None)
+        Err(_) => Adapter::create(wintun, POOL_NAME, DEVICE_NAME, None)
             .map_err(|_| rd_interface::Error::other("Failed to create wintun"))?,
     };
     let s1 = Arc::new(

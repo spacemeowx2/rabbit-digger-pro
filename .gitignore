@@ -4,6 +4,7 @@
 /generated
 *.rd.yml
 *.dat
+*.log
 dist/
 node_modules/
 docs/node_modules/

@@ -428,6 +428,19 @@ impl RunningServer {
             State::Idle => None,
         }
     }
+
+    pub async fn take_result_if_finished(&self) -> Option<anyhow::Result<()>> {
+        let finished = match &*self.state.read().await {
+            State::Running { semaphore, .. } => semaphore.is_closed(),
+            State::Idle => false,
+        };
+
+        if finished {
+            self.take_result().await
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

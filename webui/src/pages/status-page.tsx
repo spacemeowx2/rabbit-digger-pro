@@ -27,6 +27,7 @@ export function StatusPage({ engineStatus }: StatusPageProps) {
   const { status: runtimeState } = engineStatus
   const colors = STATUS_COLORS[runtimeState] ?? STATUS_COLORS.Connecting
   const servers = engineStatus.servers ?? []
+  const runningServers = servers.filter((server) => server.status === 'Running').length
 
   return (
     <div className="space-y-4">
@@ -59,7 +60,7 @@ export function StatusPage({ engineStatus }: StatusPageProps) {
             Servers
             {servers.length > 0 && (
               <span className="ml-2 text-xs font-normal text-slate-400">
-                {servers.length} running
+                {runningServers}/{servers.length} running
               </span>
             )}
           </h2>
@@ -67,12 +68,30 @@ export function StatusPage({ engineStatus }: StatusPageProps) {
         {servers.length > 0 ? (
           <div className="divide-y divide-slate-100">
             {servers.map((server) => (
-              <div key={server.name} className="flex items-center gap-3 px-4 py-3">
-                <div className="h-2 w-2 rounded-full shrink-0 bg-emerald-500" />
+              <div key={server.name} className="flex items-start gap-3 px-4 py-3">
+                <div className={classNames(
+                  'mt-1.5 h-2 w-2 rounded-full shrink-0',
+                  server.status === 'Running' && 'bg-emerald-500',
+                  server.status === 'Error' && 'bg-rose-500',
+                  server.status === 'Stopped' && 'bg-slate-400',
+                )} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-slate-900 truncate">{server.name}</p>
+                  {server.message && (
+                    <p className="mt-1 text-xs text-rose-600 break-words">{server.message}</p>
+                  )}
                 </div>
-                <span className="tag bg-slate-50 text-slate-500">{server.server_type}</span>
+                <div className="flex items-center gap-2">
+                  <span className={classNames(
+                    'tag',
+                    server.status === 'Running' && 'bg-emerald-50 text-emerald-700',
+                    server.status === 'Error' && 'bg-rose-50 text-rose-700',
+                    server.status === 'Stopped' && 'bg-slate-50 text-slate-500',
+                  )}>
+                    {server.status}
+                  </span>
+                  <span className="tag bg-slate-50 text-slate-500">{server.server_type}</span>
+                </div>
               </div>
             ))}
           </div>

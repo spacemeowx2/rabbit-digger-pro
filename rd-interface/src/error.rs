@@ -36,7 +36,7 @@ pub enum Error {
     Context(#[from] crate::context::Error),
     #[error("Not found: {0}")]
     NotFound(String),
-    #[error("{0:?}")]
+    #[error("{0}")]
     Other(Box<dyn StdError + Send + Sync + 'static>),
     #[error("{0}")]
     WithContext(ErrorWithContext),
@@ -161,6 +161,6 @@ mod tests {
         assert!(error.is_addr_in_use());
 
         let error = Error::other("Other error");
-        assert_eq!(error.to_string(), "\"Other error\"");
+        assert_eq!(error.to_string(), "Other error");
     }
 }

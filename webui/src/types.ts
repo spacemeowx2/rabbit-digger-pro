@@ -51,6 +51,8 @@ export interface TrafficSample {
 export interface ServerSnapshot {
   name: string
   server_type: string
+  status: 'Running' | 'Stopped' | 'Error'
+  message?: string
 }
 
 export interface EngineStatus {
