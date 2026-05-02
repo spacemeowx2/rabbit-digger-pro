@@ -6,12 +6,15 @@ use yaml_merge_keys::merge_keys_serde;
 
 #[cfg(feature = "api_server")]
 pub mod api_server;
+mod auto_select;
 pub mod config;
+mod fallback;
 pub mod log;
 pub mod schema;
 mod select;
 pub mod service;
 pub mod storage;
+mod url_test;
 pub mod util;
 
 pub fn get_registry() -> Result<Registry> {
@@ -33,6 +36,8 @@ pub fn get_registry() -> Result<Registry> {
     registry.init_with_registry("vless", vless::init)?;
 
     registry.init_with_registry("rabbit-digger-pro", select::init)?;
+    registry.init_with_registry("rabbit-digger-pro", url_test::init)?;
+    registry.init_with_registry("rabbit-digger-pro", fallback::init)?;
 
     Ok(registry)
 }

@@ -214,7 +214,7 @@ export function getSelectGroups(config: RdpConfig | null): Array<[string, NetCon
   }
 
   return Object.entries(config.net)
-    .filter(([, net]) => net.type === 'select')
+    .filter(([, net]) => ['select', 'url-test', 'fallback'].includes(net.type))
     .sort(([leftName], [rightName]) => {
       if (leftName === 'select-net') {
         return 1
