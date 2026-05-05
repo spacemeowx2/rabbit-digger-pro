@@ -291,6 +291,32 @@ impl Clash {
 
                 with_net(Net::new("vless", opt), target_net)
             }
+            "anytls" => {
+                #[derive(Debug, Deserialize)]
+                #[serde(rename_all = "kebab-case")]
+                struct Param {
+                    server: String,
+                    port: PortValue,
+                    password: String,
+                    sni: Option<String>,
+                    #[serde(rename = "skip-cert-verify")]
+                    skip_cert_verify: Option<bool>,
+                }
+                let params: Param = serde_json::from_value(p.opt)?;
+                let port = params.port.into_u16()?;
+                with_net(
+                    Net::new(
+                        "anytls",
+                        json!({
+                            "server": format!("{}:{}", params.server, port),
+                            "password": params.password,
+                            "sni": params.sni.unwrap_or(params.server),
+                            "skip_cert_verify": params.skip_cert_verify.unwrap_or_default(),
+                        }),
+                    ),
+                    target_net,
+                )
+            }
             "http" => {
                 #[derive(Debug, Deserialize)]
                 struct Param {
@@ -827,6 +853,35 @@ mod tests {
                 .get("reality_short_id")
                 .and_then(|v| v.as_str()),
             Some("00000000")
+        );
+
+        let anytls: Proxy = serde_json::from_value(serde_json::json!({
+            "name": "a",
+            "type": "anytls",
+            "server": "example.com",
+            "port": 443,
+            "password": "secret",
+            "sni": "www.example.com",
+            "skip-cert-verify": true
+        }))
+        .unwrap();
+        let anytls = c.proxy_to_net(anytls, None).unwrap();
+        assert_eq!(anytls.net_type, "anytls");
+        assert_eq!(
+            anytls.opt.get("server").and_then(|v| v.as_str()),
+            Some("example.com:443")
+        );
+        assert_eq!(
+            anytls.opt.get("password").and_then(|v| v.as_str()),
+            Some("secret")
+        );
+        assert_eq!(
+            anytls.opt.get("sni").and_then(|v| v.as_str()),
+            Some("www.example.com")
+        );
+        assert_eq!(
+            anytls.opt.get("skip_cert_verify").and_then(|v| v.as_bool()),
+            Some(true)
         );
 
         let http: Proxy = serde_json::from_value(serde_json::json!({

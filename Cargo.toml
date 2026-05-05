@@ -68,6 +68,7 @@ raw = { path = "./protocol/raw", optional = true }
 obfs = { path = "./protocol/obfs", optional = true }
 hysteria = { path = "./protocol/hysteria", optional = true }
 vless = { path = "./protocol/vless", optional = true }
+anytls = { path = "./protocol/anytls", optional = true }
 
 console-subscriber = { version = "0.5.0", optional = true }
 
@@ -105,6 +106,7 @@ default = [
     "obfs",
     "hysteria",
     "vless",
+    "anytls",
     "api_server",
     "rhai",
     "raw",
@@ -145,6 +147,7 @@ members = [
     "protocol/obfs",
     "protocol/hysteria",
     "protocol/vless",
+    "protocol/anytls",
     "ffi",
 ]
 
