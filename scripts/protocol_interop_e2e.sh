@@ -316,7 +316,18 @@ run_hysteria() {
   official_socks_port="$(pick_port)"
 
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-    -keyout "$TMP_DIR/server.key" -out "$TMP_DIR/server.crt" -subj '/CN=localhost' >/dev/null 2>&1
+    -keyout "$TMP_DIR/ca.key" -out "$TMP_DIR/ca.crt" -subj '/CN=rdp-hysteria-test-ca' \
+    -addext 'basicConstraints=critical,CA:TRUE' >/dev/null 2>&1
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "$TMP_DIR/server.key" -out "$TMP_DIR/server.csr" -subj '/CN=localhost' >/dev/null 2>&1
+  cat >"$TMP_DIR/server.ext" <<EOF_EXT
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:localhost,IP:127.0.0.1
+EOF_EXT
+  openssl x509 -req -in "$TMP_DIR/server.csr" -CA "$TMP_DIR/ca.crt" -CAkey "$TMP_DIR/ca.key" \
+    -CAcreateserial -days 1 -out "$TMP_DIR/server.crt" -extfile "$TMP_DIR/server.ext" >/dev/null 2>&1
 
   cat >"$TMP_DIR/hysteria-official-server.yaml" <<EOF_CFG
 listen: 127.0.0.1:${official_server_port}
@@ -334,8 +345,7 @@ EOF_CFG
   sleep 1
   make_rdp_client_config hysteria "$official_server_port" "$rdp_socks_port" "    auth: testpass
     server_name: localhost
-    ca_pem: |
-$(sed 's/^/      /' "$TMP_DIR/server.crt")"
+    ca_pem: ${TMP_DIR}/ca.crt"
   rdp_client_pid="$(start_bg "$TMP_DIR/hysteria-rdp-client.log" "$RDP_BIN" -c "$TMP_DIR/rdp-hysteria-client.yaml")"
   wait_port "$rdp_socks_port"
   curl_via_socks "$rdp_socks_port" "$TMP_DIR/hysteria-scenario1.txt"
