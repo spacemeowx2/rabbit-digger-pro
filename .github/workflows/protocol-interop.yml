@@ -1,0 +1,64 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Protocol Interop
+
+on:
+  push:
+    branches: [main, feat/anytls-protocol]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      protocol:
+        description: Protocol to test
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - shadowsocks
+          - trojan
+          - vless
+          - hysteria
+          - anytls
+
+jobs:
+  interop:
+    name: ${{ matrix.protocol }} official binary interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [shadowsocks, trojan, vless, hysteria, anytls]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build interop image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: scripts/interop.Dockerfile
+          load: true
+          tags: rdp-protocol-interop:ci
+          cache-from: type=gha,scope=protocol-interop-${{ runner.os }}
+          cache-to: type=gha,mode=max,scope=protocol-interop-${{ runner.os }}
+
+      - name: Run protocol interop
+        run: |
+          protocol="${{ github.event.inputs.protocol || matrix.protocol }}"
+          if [ "${protocol}" != "all" ] && [ "${protocol}" != "${{ matrix.protocol }}" ]; then
+            echo "Skipping ${{ matrix.protocol }} because workflow_dispatch requested ${protocol}"
+            exit 0
+          fi
+          docker run --rm \
+            --network host \
+            -e CARGO_HOME=/usr/local/cargo \
+            -e KEEP_TMP=${KEEP_TMP:-0} \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            rdp-protocol-interop:ci \
+            bash scripts/protocol_interop_e2e.sh "${{ matrix.protocol }}"
