@@ -159,6 +159,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33954243bd79057c2de7338850b85983a44588021f8a5fee574a8888c6de4344"
 
 [[package]]
+name = "anytls"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "md5",
+ "rand 0.9.2",
+ "rd-interface",
+ "rd-std",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2375,6 +2393,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "md5"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae960838283323069879657ca3de837e9f7bbb4c7bf6ea7f1b290d5e9476d2e0"
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3168,6 +3192,7 @@ name = "rabbit-digger-pro"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anytls",
  "async-stream",
  "axum",
  "bytes",

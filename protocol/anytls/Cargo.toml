@@ -1,0 +1,20 @@
+[package]
+name = "anytls"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rd-interface = { path = "../../rd-interface", version = "0.4" }
+rd-std = { path = "../../rd-std", version = "0.1" }
+serde = "1.0"
+tokio = { version = "1.50.0", features = ["full"] }
+bytes = "1.11.0"
+futures = "0.3"
+tokio-rustls = "0.26.4"
+webpki-roots = "0.26.11"
+sha2 = "0.10.9"
+md5 = "0.8.0"
+rand = "0.9.2"
+
+[dev-dependencies]
+serde_json = "1.0"
