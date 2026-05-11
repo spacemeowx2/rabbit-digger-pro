@@ -32,6 +32,7 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<TunAsyncDevice> {
             IpAddress::Ipv6(v6) => IpAddr::from(Ipv6Addr::from(v6)),
         })
         .netmask(netmask)
+        .mtu(cfg.mtu as u16)
         .layer(cfg.layer.into())
         .up();
 

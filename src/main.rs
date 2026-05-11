@@ -8,7 +8,12 @@ use futures::{
     stream::{select, TryStreamExt},
     StreamExt,
 };
-use rabbit_digger_pro::{config::ImportSource, schema, util::exit_stream, ApiServerConfig, App};
+use rabbit_digger_pro::{
+    config::ImportSource,
+    schema,
+    util::{exit_stream, shutdown_signal},
+    ApiServerConfig, App,
+};
 use tracing_subscriber::filter::dynamic_filter_fn;
 
 #[cfg(feature = "telemetry")]
@@ -228,7 +233,7 @@ async fn main() -> Result<()> {
             app.run_api_server(api_server.to_api_server_config())
                 .await?;
 
-            tokio::signal::ctrl_c().await?;
+            shutdown_signal().await?;
 
             return Ok(());
         }

@@ -8,11 +8,18 @@ use std::process::Command;
 use rd_interface::side_effect::{SideEffectManager, SideEffectUndo};
 use tracing::debug;
 
+#[cfg(any(target_os = "linux", test))]
 const TUN_TABLE: &str = "2468";
+#[cfg(any(target_os = "linux", test))]
+const MAIN_RULE_PRIORITY: &str = "100";
+#[cfg(any(target_os = "linux", test))]
+const TUN_RULE_PRIORITY: &str = "200";
 
 pub struct RouteSetupConfig {
     pub tun_name: String,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub tun_gateway: String,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fwmark: u32,
     pub dns_ip: String,
 }
@@ -32,6 +39,7 @@ pub fn setup_routes(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> R
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(target_os = "macos")]
 fn cmd_undo(cmd: &str, args: &[&str]) -> SideEffectUndo {
     SideEffectUndo::Command {
         cmd: cmd.to_string(),
@@ -39,7 +47,33 @@ fn cmd_undo(cmd: &str, args: &[&str]) -> SideEffectUndo {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn cmd_undo_owned(cmd: &str, args: Vec<String>) -> SideEffectUndo {
+    SideEffectUndo::Command {
+        cmd: cmd.to_string(),
+        args,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
+    debug!("Running: {cmd} {}", args.join(" "));
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{cmd} {}: {}", args.join(" "), stderr.trim()));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(test, allow(dead_code))]
+fn run_owned(cmd: &str, args: &[String]) -> Result<(), String> {
     debug!("Running: {cmd} {}", args.join(" "));
     let output = Command::new(cmd)
         .args(args)
@@ -57,96 +91,150 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
 // Linux
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
-fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
-    let mark_str = config.fwmark.to_string();
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IpSideEffect {
+    description: String,
+    apply_args: Vec<String>,
+    undo_args: Vec<String>,
+}
 
-    // 1. TUN default route in dedicated table
-    mgr.apply(
-        format!(
-            "ip route add default dev {} table {TUN_TABLE}",
-            config.tun_name
-        ),
-        || {
-            run(
-                "ip",
-                &[
-                    "route",
-                    "add",
-                    "default",
-                    "dev",
-                    &config.tun_name,
-                    "table",
-                    TUN_TABLE,
-                ],
-            )
-        },
-        cmd_undo(
-            "ip",
-            &[
+#[cfg(any(target_os = "linux", test))]
+impl IpSideEffect {
+    fn new(
+        description: impl Into<String>,
+        apply_args: Vec<String>,
+        undo_args: Vec<String>,
+    ) -> Self {
+        Self {
+            description: description.into(),
+            apply_args,
+            undo_args,
+        }
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    fn apply(self, mgr: &mut SideEffectManager) -> Result<(), String> {
+        let description = self.description;
+        let apply_args = self.apply_args;
+        let undo_args = self.undo_args;
+
+        mgr.apply(
+            description,
+            || run_owned("ip", &apply_args),
+            cmd_undo_owned("ip", undo_args),
+        )
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinuxTunRoutePlan {
+    tun_name: String,
+    fwmark: u32,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl LinuxTunRoutePlan {
+    fn new(tun_name: impl Into<String>, fwmark: u32) -> Self {
+        Self {
+            tun_name: tun_name.into(),
+            fwmark,
+        }
+    }
+
+    fn side_effects(&self) -> Vec<IpSideEffect> {
+        vec![
+            self.default_route(),
+            self.main_table_non_dns_rule(),
+            self.unmarked_to_tun_rule(),
+        ]
+    }
+
+    fn default_route(&self) -> IpSideEffect {
+        IpSideEffect::new(
+            format!(
+                "ip route add default dev {} table {TUN_TABLE}",
+                self.tun_name
+            ),
+            args(&[
+                "route",
+                "add",
+                "default",
+                "dev",
+                &self.tun_name,
+                "table",
+                TUN_TABLE,
+            ]),
+            args(&[
                 "route",
                 "del",
                 "default",
                 "dev",
-                &config.tun_name,
+                &self.tun_name,
                 "table",
                 TUN_TABLE,
-            ],
-        ),
-    )?;
+            ]),
+        )
+    }
 
-    // 2. suppress_prefixlength 0 (priority 100) — lets response packets
-    //    match specific routes in main table (e.g. eth0 LAN subnet)
-    mgr.apply(
-        "ip rule add table main suppress_prefixlength 0 priority 100",
-        || {
-            run(
-                "ip",
-                &[
-                    "rule",
-                    "add",
-                    "table",
-                    "main",
-                    "suppress_prefixlength",
-                    "0",
-                    "priority",
-                    "100",
-                ],
-            )
-        },
-        cmd_undo("ip", &["rule", "del", "priority", "100"]),
-    )?;
+    fn main_table_non_dns_rule(&self) -> IpSideEffect {
+        IpSideEffect::new(
+            format!(
+                "ip rule add not dport 53 table main suppress_prefixlength 0 priority {MAIN_RULE_PRIORITY}"
+            ),
+            args(&[
+                "rule",
+                "add",
+                "not",
+                "dport",
+                "53",
+                "table",
+                "main",
+                "suppress_prefixlength",
+                "0",
+                "priority",
+                MAIN_RULE_PRIORITY,
+            ]),
+            args(&["rule", "del", "priority", MAIN_RULE_PRIORITY]),
+        )
+    }
 
-    // 3. not fwmark → TUN table (priority 200) — unmarked outbound goes through TUN
-    mgr.apply(
-        format!("ip rule add not fwmark {mark_str} table {TUN_TABLE} priority 200"),
-        || {
-            run(
-                "ip",
-                &[
-                    "rule", "add", "not", "fwmark", &mark_str, "table", TUN_TABLE, "priority",
-                    "200",
-                ],
-            )
-        },
-        cmd_undo("ip", &["rule", "del", "priority", "200"]),
-    )?;
+    fn unmarked_to_tun_rule(&self) -> IpSideEffect {
+        let mark = self.fwmark.to_string();
+        IpSideEffect::new(
+            format!("ip rule add not fwmark {mark} table {TUN_TABLE} priority {TUN_RULE_PRIORITY}"),
+            args(&[
+                "rule",
+                "add",
+                "not",
+                "fwmark",
+                &mark,
+                "table",
+                TUN_TABLE,
+                "priority",
+                TUN_RULE_PRIORITY,
+            ]),
+            args(&["rule", "del", "priority", TUN_RULE_PRIORITY]),
+        )
+    }
+}
 
-    // 4. DNS hijack (priority 201) — port 53 always goes through TUN
-    let _ = mgr.apply(
-        format!("ip rule add dport 53 table {TUN_TABLE} priority 201"),
-        || {
-            run(
-                "ip",
-                &[
-                    "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "201",
-                ],
-            )
-        },
-        cmd_undo("ip", &["rule", "del", "priority", "201"]),
-    );
+#[cfg(any(target_os = "linux", test))]
+fn args(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
 
-    // 5. Set DNS
+#[cfg(target_os = "linux")]
+fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
+    let route_plan = LinuxTunRoutePlan::new(&config.tun_name, config.fwmark);
+    for side_effect in route_plan.side_effects() {
+        side_effect.apply(mgr)?;
+    }
+
+    // DNS hijack is owned by the TUN stack. The main-table rule above excludes
+    // dport 53 so application DNS reaches the TUN path, while SO_MARKed
+    // control-plane DNS can still fall through to the system default route.
     let original_dns = std::fs::read_to_string("/etc/resolv.conf").ok();
     let content = format!("nameserver {}\n", config.dns_ip);
     let _ = mgr.apply(
@@ -228,8 +316,6 @@ fn setup_macos(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result
         if original_dns.is_empty() {
             cmd_undo("networksetup", &["-setdnsservers", &service, "Empty"])
         } else {
-            let mut args = vec!["-setdnsservers", &service];
-            // Can't borrow original_dns items in cmd_undo, build full args
             SideEffectUndo::Command {
                 cmd: "networksetup".to_string(),
                 args: std::iter::once("-setdnsservers".to_string())
@@ -309,5 +395,57 @@ fn get_dns_macos(service: &str) -> Vec<String> {
             }
         }
         None => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linux_route_plan_keeps_dns_hijack_out_of_main_table() {
+        let plan = LinuxTunRoutePlan::new("tun-rdp", 255);
+        let side_effects = plan.side_effects();
+
+        assert_eq!(
+            side_effects[1].apply_args,
+            args(&[
+                "rule",
+                "add",
+                "not",
+                "dport",
+                "53",
+                "table",
+                "main",
+                "suppress_prefixlength",
+                "0",
+                "priority",
+                MAIN_RULE_PRIORITY,
+            ])
+        );
+    }
+
+    #[test]
+    fn linux_route_plan_routes_only_unmarked_traffic_to_tun_table() {
+        let plan = LinuxTunRoutePlan::new("tun-rdp", 255);
+        let side_effects = plan.side_effects();
+
+        assert_eq!(
+            side_effects[2].apply_args,
+            args(&[
+                "rule",
+                "add",
+                "not",
+                "fwmark",
+                "255",
+                "table",
+                TUN_TABLE,
+                "priority",
+                TUN_RULE_PRIORITY,
+            ])
+        );
+        assert!(!side_effects.iter().any(|side_effect| {
+            side_effect.apply_args == args(&["rule", "add", "dport", "53", "table", TUN_TABLE])
+        }));
     }
 }

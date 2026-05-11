@@ -6,11 +6,27 @@ use tokio::signal::ctrl_c;
 pub fn exit_stream() -> impl Stream<Item = io::Result<usize>> {
     let signals = try_stream! {
         loop {
-            ctrl_c().await?;
+            shutdown_signal().await?;
             yield ();
         }
     };
     exit_stream_from_signals(signals)
+}
+
+#[cfg(unix)]
+pub async fn shutdown_signal() -> io::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    tokio::select! {
+        result = ctrl_c() => result,
+        _ = terminate.recv() => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+pub async fn shutdown_signal() -> io::Result<()> {
+    ctrl_c().await
 }
 
 fn exit_stream_from_signals<S>(signals: S) -> impl Stream<Item = io::Result<usize>>

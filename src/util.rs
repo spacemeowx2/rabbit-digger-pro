@@ -1,6 +1,6 @@
 pub mod app_dirs;
 pub use debounce_stream::{DebounceStream, DebounceStreamExt};
-pub use exit_stream::exit_stream;
+pub use exit_stream::{exit_stream, shutdown_signal};
 #[cfg(feature = "api_server")]
 pub use suggest_tun_ip::suggest_tun_ip;
 

@@ -5,6 +5,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::{
     config::ImportSource,
     storage::{FileStorage, FolderType, Storage},
+    util::shutdown_signal,
     ApiServerConfig, App,
 };
 
@@ -72,7 +73,7 @@ pub async fn run_daemon(bind: String, access_token: Option<String>) -> Result<()
                 tracing::error!("Engine loop exited with error: {:?}", e);
             }
         }
-        _ = tokio::signal::ctrl_c() => {
+        _ = shutdown_signal() => {
             tracing::info!("Shutting down daemon...");
             app.rd.stop().await?;
         }
