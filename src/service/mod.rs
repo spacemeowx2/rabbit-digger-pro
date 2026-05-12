@@ -41,6 +41,7 @@ pub enum ServiceAction {
     },
 }
 
+#[cfg(target_os = "macos")]
 const SERVICE_LABEL: &str = "com.rabbit-digger-pro";
 
 /// Re-exec the current process under `sudo` if not already root.

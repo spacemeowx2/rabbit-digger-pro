@@ -140,6 +140,10 @@ where
             Action::Pass => Some(packet),
             Action::Rewrite => Some(self.payload(packet, |mut ipv4| {
                 if let Ok(Some((src_addr, ori_addr))) = set_dst_addr(&mut ipv4, self.override_v4) {
+                    tracing::trace!(
+                        "gateway rewrite inbound TCP {src_addr} -> {ori_addr} to {}",
+                        self.override_v4
+                    );
                     self.map.insert(src_addr, ori_addr);
                 }
             })),
@@ -153,8 +157,20 @@ where
                 let _ = self.correct_arp_request(&mut packet);
 
                 Some(self.payload(packet, |mut ipv4| {
-                    if let Some(src) = get_dst_addr(&mut ipv4).map(|d| self.map.get(&d)).flatten() {
-                        set_src_addr(&mut ipv4, src).ok();
+                    if let Some(dst) = get_dst_addr(&mut ipv4) {
+                        let flags = tcp_flags(&mut ipv4);
+                        if let Some(src) = self.map.get(&dst) {
+                            tracing::trace!(
+                                "gateway rewrite outbound TCP {} -> {dst} to source {src}; flags={flags}",
+                                self.override_v4
+                            );
+                            set_src_addr(&mut ipv4, src).ok();
+                        } else {
+                            tracing::trace!(
+                                "gateway outbound TCP missing mapping for {dst}; source remains {}; flags={flags}",
+                                self.override_v4
+                            );
+                        }
                     }
                 }))
             }
@@ -263,13 +279,21 @@ fn set_dst_addr<T: AsRef<[u8]> + AsMut<[u8]>>(
 
     let (src_port, orig_port) = match ip.next_header() {
         IpProtocol::Tcp => {
-            ip.set_dst_addr(dst_addr.ip().to_owned().into());
+            let src_addr = ip.src_addr();
+            let new_dst_addr = dst_addr.ip().to_owned().into();
+            ip.set_dst_addr(new_dst_addr);
 
-            let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
-            let dst_port = tcp.dst_port();
-            tcp.set_dst_port(dst_addr.port());
+            let (src_port, dst_port) = {
+                let mut tcp = TcpPacket::new_unchecked(ip.payload_mut());
+                let src_port = tcp.src_port();
+                let dst_port = tcp.dst_port();
+                tcp.set_dst_port(dst_addr.port());
+                tcp.fill_checksum(&src_addr.into(), &new_dst_addr.into());
+                (src_port, dst_port)
+            };
+            ip.fill_checksum();
 
-            (tcp.src_port(), dst_port)
+            (src_port, dst_port)
         }
         _ => return Ok(None),
     };
@@ -298,6 +322,28 @@ fn get_dst_addr<T: AsRef<[u8]> + AsMut<[u8]>>(ip: &mut Ipv4Packet<T>) -> Option<
         _ => return None,
     };
     Some(SocketAddrV4::new(dst_addr.into(), port))
+}
+
+fn tcp_flags<T: AsRef<[u8]> + AsMut<[u8]>>(ip: &mut Ipv4Packet<T>) -> String {
+    if let IpProtocol::Tcp = ip.next_header() {
+        if let Ok(tcp) = TcpPacket::new_checked(ip.payload_mut()) {
+            let mut flags = Vec::new();
+            if tcp.syn() {
+                flags.push("SYN");
+            }
+            if tcp.ack() {
+                flags.push("ACK");
+            }
+            if tcp.rst() {
+                flags.push("RST");
+            }
+            if tcp.fin() {
+                flags.push("FIN");
+            }
+            return flags.join("|");
+        }
+    }
+    String::new()
 }
 
 fn set_src_addr<T: AsRef<[u8]> + AsMut<[u8]>>(

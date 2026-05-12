@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-use super::{ServiceAction, SERVICE_LABEL};
+use super::ServiceAction;
 
 const SERVICE_NAME: &str = "RabbitDiggerPro";
 const DISPLAY_NAME: &str = "Rabbit Digger Pro";

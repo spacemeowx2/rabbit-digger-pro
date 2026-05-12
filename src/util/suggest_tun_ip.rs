@@ -1,10 +1,9 @@
 /// Pick a /24 TUN interface IP that doesn't conflict with existing host interfaces.
 ///
 /// Candidates are tried in order of least likely to conflict:
-/// 1. RFC 5737 TEST-NET ranges (reserved for documentation, never routed)
-/// 2. RFC 2544 benchmarking (198.18-19.x, same family Clash uses for fake-ip)
-/// 3. RFC 6598 CGNAT space (100.64.x, rarely on local interfaces)
-/// 4. 10.x private fallback
+/// 1. 10.x private ranges commonly used for local TUN interfaces
+/// 2. RFC 6598 CGNAT space (100.64.x, rarely on local interfaces)
+/// 3. RFC 2544 benchmarking (198.18-19.x, same family Clash uses for fake-ip)
 pub fn suggest_tun_ip() -> String {
     let used: Vec<(u32, u32)> = if_addrs::get_if_addrs()
         .unwrap_or_default()
@@ -20,21 +19,17 @@ pub fn suggest_tun_ip() -> String {
         .collect();
 
     const CANDIDATES: &[(u8, u8, u8)] = &[
-        // TEST-NET-1/2/3 (RFC 5737)
-        (192, 0, 2),    // 192.0.2.0/24
-        (198, 51, 100), // 198.51.100.0/24
-        (203, 0, 113),  // 203.0.113.0/24
+        (10, 99, 0),
+        (10, 89, 0),
+        (10, 88, 0),
+        (10, 0, 1),
+        // CGNAT (100.64.0.0/10)
+        (100, 64, 0),
+        (100, 65, 0),
         // RFC 2544 benchmarking (198.18.0.0/15)
         (198, 18, 0),
         (198, 18, 1),
         (198, 19, 0),
-        // CGNAT (100.64.0.0/10)
-        (100, 64, 0),
-        (100, 65, 0),
-        // 10.x private fallback
-        (10, 89, 0),
-        (10, 88, 0),
-        (10, 0, 1),
     ];
 
     for &(a, b, c) in CANDIDATES {

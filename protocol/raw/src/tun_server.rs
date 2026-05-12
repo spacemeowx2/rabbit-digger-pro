@@ -1,9 +1,11 @@
 use std::{
+    future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    pin::Pin,
     str::FromStr,
 };
 
-use futures::ready;
+use futures::{ready, stream::FuturesUnordered, StreamExt};
 use rd_interface::{
     async_trait, config::NetRef, prelude::*, rd_config, registry::Builder, Arc, Context, IServer,
     IntoAddress, Net, Result, Server,
@@ -16,6 +18,7 @@ use tokio_smoltcp::{
         wire::{HardwareAddress, IpAddress, IpCidr},
     },
     BufferSize, Net as SmoltcpNet, NetConfig, RawSocket, TcpListener,
+    TcpStream as SmoltcpTcpStream,
 };
 
 use crate::{
@@ -96,23 +99,26 @@ impl IServer for TunServer {
         let config = &self.config;
 
         // Parse TUN interface IP
-        let ip_cidr = IpCidr::from_str(&config.ip_addr)
+        let interface_cidr = IpCidr::from_str(&config.ip_addr)
             .map_err(|_| rd_interface::Error::other("Invalid ip_addr"))?;
-        let ip_addr = match IpAddr::from(ip_cidr.address()) {
+        let interface_ip = match IpAddr::from(interface_cidr.address()) {
             IpAddr::V4(v4) => v4,
             _ => return Err(rd_interface::Error::other("TUN only supports IPv4")),
         };
-        let gateway = ip_addr;
+        let stack_ip = virtual_tun_ip(interface_ip, interface_cidr, &[]);
+        let dns_ip = virtual_tun_ip(interface_ip, interface_cidr, &[stack_ip]);
+        let stack_cidr = ipv4_cidr(stack_ip, interface_cidr.prefix_len());
+        let stack_cidr_text = format!("{}/{}", stack_ip, interface_cidr.prefix_len());
 
         // 1. Create TUN device via tun crate (gets the fd for smoltcp)
         let raw_config = crate::config::RawNetConfig {
             device: crate::config::MaybeString::Other(crate::config::TunTapConfig {
                 tuntap: crate::config::TunTap::Tun,
                 name: Some(config.device.clone()),
-                host_addr: ip_addr.to_string(),
+                host_addr: interface_ip.to_string(),
             }),
-            gateway: Some(gateway.to_string()),
-            ip_addr: config.ip_addr.clone(),
+            gateway: Some(stack_ip.to_string()),
+            ip_addr: stack_cidr_text,
             ethernet_addr: None,
             mtu: config.mtu as usize,
             forward: true,
@@ -124,7 +130,7 @@ impl IServer for TunServer {
         // 2. Set up smoltcp network stack with GatewayDevice.
         //    Use 0.0.0.0/0 as the gateway CIDR so ALL incoming traffic is rewritten.
         let gateway_cidr = IpCidr::new(IpAddress::v4(0, 0, 0, 0), 0);
-        let override_addr = SocketAddrV4::new(ip_addr, 1);
+        let override_addr = SocketAddrV4::new(stack_ip, 1);
         let gw_device = GatewayDevice::new(
             tun_device,
             ethernet_addr,
@@ -135,10 +141,10 @@ impl IServer for TunServer {
         let map = gw_device.get_map();
 
         let hw_addr = HardwareAddress::Ip; // TUN is L3
-        let gw_ip = IpAddress::from_str(&gateway.to_string()).ok();
+        let gw_ip = IpAddress::from_str(&interface_ip.to_string()).ok();
         let mut net_config = NetConfig::new(
             IfaceConfig::new(hw_addr),
-            ip_cidr,
+            stack_cidr,
             gw_ip.into_iter().collect(),
         );
         net_config.buffer_size = BufferSize {
@@ -160,9 +166,9 @@ impl IServer for TunServer {
                 &mut mgr,
                 &RouteSetupConfig {
                     tun_name: config.device.clone(),
-                    tun_gateway: gateway.to_string(),
+                    tun_gateway: stack_ip.to_string(),
                     fwmark: config.fwmark,
-                    dns_ip: gateway.to_string(),
+                    dns_ip: dns_ip.to_string(),
                 },
             )
             .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
@@ -177,12 +183,6 @@ impl IServer for TunServer {
         // 4. Initialize fake IP pool
         let fake_ip = Arc::new(FakeIpPool::new(&config.fake_ip_range));
 
-        // 5. Bind listeners and serve traffic
-        let tcp_listener = smoltcp_net
-            .tcp_bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1).into())
-            .await
-            .map_err(|e| rd_interface::Error::other(format!("TCP bind: {e}")))?;
-
         let raw_socket = smoltcp_net
             .raw_socket(
                 tokio_smoltcp::smoltcp::wire::IpVersion::Ipv4,
@@ -194,12 +194,12 @@ impl IServer for TunServer {
         let handler = TunHandler {
             net: self.net.clone(),
             map,
-            ip_cidr,
+            ip_cidr: stack_cidr,
             fake_ip,
             dns_mode: config.dns_mode,
         };
 
-        let tcp_task = handler.serve_tcp(tcp_listener);
+        let tcp_task = handler.serve_tcp(smoltcp_net.clone());
         let udp_task = handler.serve_udp(raw_socket);
 
         select! {
@@ -212,6 +212,10 @@ impl IServer for TunServer {
     }
 }
 
+const TCP_LISTENER_POOL: usize = 32;
+type TcpAcceptFuture =
+    Pin<Box<dyn Future<Output = Result<(TcpListener, SmoltcpTcpStream, SocketAddr)>> + Send>>;
+
 struct TunHandler {
     net: Net,
     map: MapTable,
@@ -221,9 +225,23 @@ struct TunHandler {
 }
 
 impl TunHandler {
-    async fn serve_tcp(&self, mut listener: TcpListener) -> Result<()> {
+    async fn serve_tcp(&self, smoltcp_net: Arc<SmoltcpNet>) -> Result<()> {
+        let mut accepts = FuturesUnordered::<TcpAcceptFuture>::new();
+        for _ in 0..TCP_LISTENER_POOL {
+            let listener = smoltcp_net
+                .tcp_bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1).into())
+                .await
+                .map_err(|e| rd_interface::Error::other(format!("TCP bind: {e}")))?;
+            accepts.push(accept_tcp(listener));
+        }
+
         loop {
-            let (tcp, addr) = listener.accept().await?;
+            let (listener, tcp, addr) = accepts
+                .next()
+                .await
+                .ok_or_else(|| rd_interface::Error::other("TUN TCP listener pool stopped"))??;
+            accepts.push(accept_tcp(listener));
+
             let orig_addr = self.map.get(&match addr {
                 SocketAddr::V4(v4) => v4,
                 _ => continue,
@@ -246,7 +264,15 @@ impl TunHandler {
                         SocketAddr::from(orig_addr).into_address()?
                     };
 
-                    let target = net.tcp_connect(ctx, &target_addr).await?;
+                    let target = match net.tcp_connect(ctx, &target_addr).await {
+                        Ok(target) => target,
+                        Err(e) => {
+                            tracing::warn!(
+                                "TUN TCP connect failed for {addr} -> {target_addr}: {e}"
+                            );
+                            return Ok(()) as Result<()>;
+                        }
+                    };
                     tracing::debug!("Bridging TUN TCP {} ↔ {}", addr, target_addr);
                     match ctx
                         .connect_tcp(rd_interface::TcpStream::from(tcp), target)
@@ -257,6 +283,8 @@ impl TunHandler {
                     }
                     Ok(()) as Result<()>
                 });
+            } else {
+                tracing::warn!("TUN TCP missing original destination for {addr}");
             }
         }
     }
@@ -271,6 +299,13 @@ impl TunHandler {
         rd_std::util::forward_udp::forward_udp(dns_source, self.net.clone(), None).await?;
         Ok(())
     }
+}
+
+fn accept_tcp(mut listener: TcpListener) -> TcpAcceptFuture {
+    Box::pin(async move {
+        let (tcp, addr) = listener.accept().await?;
+        Ok((listener, tcp, addr))
+    })
 }
 
 /// Wraps the raw UDP source to intercept DNS queries in fake-ip mode.
@@ -330,6 +365,58 @@ impl TunServer {
     }
 }
 
+fn virtual_tun_ip(interface_ip: Ipv4Addr, ip_cidr: IpCidr, excluded: &[Ipv4Addr]) -> Ipv4Addr {
+    for offset in [1, 2, -1, 3, -2, -3] {
+        if let Some(candidate) = offset_ipv4(interface_ip, offset) {
+            if !excluded.contains(&candidate)
+                && is_usable_virtual_tun_ip(candidate, interface_ip, ip_cidr)
+            {
+                return candidate;
+            }
+        }
+    }
+
+    interface_ip
+}
+
+fn offset_ipv4(ip: Ipv4Addr, offset: i32) -> Option<Ipv4Addr> {
+    let bits = u32::from(ip);
+    let shifted = if offset >= 0 {
+        bits.checked_add(offset as u32)
+    } else {
+        bits.checked_sub(offset.unsigned_abs())
+    }?;
+    Some(Ipv4Addr::from(shifted))
+}
+
+fn is_usable_virtual_tun_ip(candidate: Ipv4Addr, interface_ip: Ipv4Addr, ip_cidr: IpCidr) -> bool {
+    if candidate == interface_ip {
+        return false;
+    }
+
+    let [a, b, c, d] = candidate.octets();
+    let candidate_addr = tokio_smoltcp::smoltcp::wire::Ipv4Address::new(a, b, c, d);
+    if !ip_cidr.contains_addr(&IpAddress::Ipv4(candidate_addr)) {
+        return false;
+    }
+
+    if let IpCidr::Ipv4(cidr) = ip_cidr {
+        if candidate_addr == cidr.network().address() {
+            return false;
+        }
+        if cidr.broadcast() == Some(candidate_addr) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn ipv4_cidr(ip: Ipv4Addr, prefix_len: u8) -> IpCidr {
+    let [a, b, c, d] = ip.octets();
+    IpCidr::new(IpAddress::v4(a, b, c, d), prefix_len)
+}
+
 impl Builder<Server> for TunServer {
     const NAME: &'static str = "tun";
     type Config = TunServerConfig;
@@ -337,5 +424,41 @@ impl Builder<Server> for TunServer {
 
     fn build(config: Self::Config) -> Result<Self> {
         TunServer::new(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn virtual_tun_ip_uses_neighbor_inside_subnet() {
+        let cidr = IpCidr::from_str("10.99.0.1/24").unwrap();
+        assert_eq!(
+            virtual_tun_ip(Ipv4Addr::new(10, 99, 0, 1), cidr, &[]),
+            Ipv4Addr::new(10, 99, 0, 2)
+        );
+    }
+
+    #[test]
+    fn virtual_tun_ip_uses_next_available_neighbor() {
+        let cidr = IpCidr::from_str("10.99.0.1/24").unwrap();
+        assert_eq!(
+            virtual_tun_ip(
+                Ipv4Addr::new(10, 99, 0, 1),
+                cidr,
+                &[Ipv4Addr::new(10, 99, 0, 2)]
+            ),
+            Ipv4Addr::new(10, 99, 0, 3)
+        );
+    }
+
+    #[test]
+    fn virtual_tun_ip_avoids_broadcast_address() {
+        let cidr = IpCidr::from_str("10.99.0.254/24").unwrap();
+        assert_eq!(
+            virtual_tun_ip(Ipv4Addr::new(10, 99, 0, 254), cidr, &[]),
+            Ipv4Addr::new(10, 99, 0, 253)
+        );
     }
 }

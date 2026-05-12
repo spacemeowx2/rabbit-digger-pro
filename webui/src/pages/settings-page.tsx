@@ -40,6 +40,11 @@ const DEFAULT_SETTINGS: DaemonSettings = {
 }
 
 const SETTINGS_KEY = 'daemon/settings'
+const DAEMON_DIRECT_NET = 'daemon_direct'
+const DAEMON_MARKED_NET = 'daemon_marked'
+const DAEMON_DNS_NET = 'daemon_direct_dns'
+const DAEMON_OUT_NET = 'daemon_out'
+const DAEMON_SELECTED_NET = 'daemon_selected'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,35 +75,74 @@ function formatRelativeTime(dateStr?: string): string {
   }
 }
 
+function importedProxySetupScript(outboundNet: string): string {
+  return `
+let list = [];
+for name in config.net.keys() {
+    let kind = config.net[name]["type"];
+    if kind == "vless" || kind == "trojan" || kind == "shadowsocks" || kind == "anytls" || kind == "http" || kind == "socks5" {
+        config.net[name]["net"] = "${outboundNet}";
+        list.push(name);
+    }
+}
+if list.len() == 0 {
+    throw "no supported proxy imported";
+}
+let selected = list[0];
+if list.len() > 1 {
+    selected = list[1];
+}
+config.net["${DAEMON_SELECTED_NET}"]["list"] = list;
+config.net["${DAEMON_SELECTED_NET}"]["selected"] = selected;
+`
+}
+
 function buildConfigText(settings: DaemonSettings): string {
-  const net: Record<string, unknown> = { local: { type: 'local' } }
+  const net: Record<string, unknown> = {}
   const server: Record<string, unknown> = {}
   const imports: unknown[] = []
 
   const activeSub = settings.subscriptions[settings.activeIndex]
+  const proxyOutboundNet = settings.tunEnabled ? DAEMON_OUT_NET : DAEMON_DIRECT_NET
+
+  if (settings.tunEnabled) {
+    net[DAEMON_MARKED_NET] = { type: 'local', mark: 255, connect_timeout: 10 }
+    net[DAEMON_DNS_NET] = { type: 'dns', server: 'cloudflare', net: DAEMON_MARKED_NET }
+    net[DAEMON_OUT_NET] = {
+      type: 'local',
+      mark: 255,
+      connect_timeout: 10,
+      lookup_host: DAEMON_DNS_NET,
+    }
+  } else {
+    net[DAEMON_DIRECT_NET] = { type: 'local', connect_timeout: 10 }
+  }
+
   if (activeSub) {
     imports.push({
       type: 'clash',
       source: {
         poll: { url: activeSub.url, interval: activeSub.interval * 60 },
       },
-      select: 'proxy',
+      disable_proxy_group: true,
+      select: DAEMON_SELECTED_NET,
+    })
+    imports.push({
+      type: 'rhai',
+      source: {
+        text: importedProxySetupScript(proxyOutboundNet),
+      },
     })
   } else {
-    net['proxy'] = { type: 'alias', net: 'local' }
+    net[DAEMON_SELECTED_NET] = { type: 'alias', net: proxyOutboundNet }
   }
 
-  const outboundNet = 'proxy'
-
   if (settings.tunEnabled) {
-    // fwmark on local net to bypass TUN routing (prevents routing loop)
-    net['local'] = { type: 'local', mark: 255 }
-    net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
     const tunConfig: Record<string, unknown> = {
       type: 'tun',
       device: 'utun100',
       dns_mode: settings.tunDnsMode,
-      net: 'resolve',
+      net: DAEMON_SELECTED_NET,
       fwmark: 255,
       bypass_ips: [],
     }
@@ -110,7 +154,7 @@ function buildConfigText(settings: DaemonSettings): string {
   server['mixed'] = {
     type: 'http+socks5',
     bind: `127.0.0.1:${settings.port}`,
-    net: outboundNet,
+    net: DAEMON_SELECTED_NET,
     listen: 'local',
   }
 
