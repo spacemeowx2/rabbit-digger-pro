@@ -250,6 +250,7 @@ class Plugin:
             needs_reload = False
             with tempfile.TemporaryDirectory(prefix="rdp-update-") as temp:
                 temp_dir = Path(temp)
+                temp_dir.chmod(0o755)
                 helper = manifest.get("helper")
                 if helper:
                     helper_path = temp_dir / "rabbit-digger-pro"
