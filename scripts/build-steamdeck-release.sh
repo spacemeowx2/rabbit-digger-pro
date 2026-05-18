@@ -39,6 +39,11 @@ fi
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
+(
+  cd "$ROOT/webui"
+  pnpm install --frozen-lockfile=false
+)
+
 cargo build --release --features webui_embed
 cp "$ROOT/target/release/rabbit-digger-pro" "$OUT_DIR/$HELPER_NAME"
 
