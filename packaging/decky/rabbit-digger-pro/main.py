@@ -2,8 +2,10 @@ import hashlib
 import json
 import os
 import pwd
+import re
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import urllib.request
@@ -15,6 +17,10 @@ from typing import Any
 PLUGIN_DIR = Path(__file__).resolve().parent
 SERVICE_UNIT = "rabbit-digger-pro.service"
 DEFAULT_BIND = "127.0.0.1:9091"
+TUN_DEVICE = "tun-rdp"
+TUN_TABLE = "2468"
+SYSTEM_HELPER = Path("/var/lib/rabbit_digger_pro/bin/rabbit-digger-pro")
+SYSTEM_UNIT = Path("/etc/systemd/system") / SERVICE_UNIT
 DEFAULT_MANIFEST_URL = (
     "https://github.com/spacemeowx2/rabbit-digger-pro/releases/latest/download/"
     "steamdeck-update-manifest.json"
@@ -22,18 +28,21 @@ DEFAULT_MANIFEST_URL = (
 
 
 def _user_home() -> Path:
-    value = os.environ.get("DECKY_USER_HOME") or os.environ.get("HOME")
-    return Path(value or "/home/deck")
+    if os.environ.get("DECKY_USER_HOME"):
+        return Path(os.environ["DECKY_USER_HOME"])
+    if os.geteuid() == 0 and Path("/home/deck").exists():
+        return Path("/home/deck")
+    return Path(os.environ.get("HOME") or "/home/deck")
 
 
 def _xdg_data_home() -> Path:
-    if os.environ.get("DECKY_USER_HOME"):
+    if os.environ.get("DECKY_USER_HOME") or (os.geteuid() == 0 and Path("/home/deck").exists()):
         return _user_home() / ".local/share"
     return Path(os.environ.get("XDG_DATA_HOME", _user_home() / ".local/share"))
 
 
 def _xdg_config_home() -> Path:
-    if os.environ.get("DECKY_USER_HOME"):
+    if os.environ.get("DECKY_USER_HOME") or (os.geteuid() == 0 and Path("/home/deck").exists()):
         return _user_home() / ".config"
     return Path(os.environ.get("XDG_CONFIG_HOME", _user_home() / ".config"))
 
@@ -97,6 +106,20 @@ def _deck_user() -> tuple[str, int]:
         return pwd.getpwuid(os.getuid()).pw_name, os.getuid()
 
 
+def _run(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            args,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except FileNotFoundError as error:
+        return subprocess.CompletedProcess(args, 127, "", str(error))
+
+
 def _run_as_deck(args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     _, uid = _deck_user()
@@ -117,15 +140,22 @@ def _run_as_deck(args: list[str], timeout: int = 60) -> subprocess.CompletedProc
             *args,
         ]
 
-    return subprocess.run(
-        command,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=timeout,
-        env=env,
-    )
+    try:
+        return subprocess.run(
+            command,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=env,
+        )
+    except FileNotFoundError as error:
+        return subprocess.CompletedProcess(command, 127, "", str(error))
+
+
+def _systemctl_system(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return _run(["systemctl", *args], timeout=timeout)
 
 
 def _systemctl_user(*args: str) -> subprocess.CompletedProcess[str]:
@@ -165,12 +195,60 @@ def _fetch_manifest() -> dict[str, Any]:
         return json.loads(path.read_text())
 
 
-def _service_active() -> bool:
-    result = _systemctl_user("is-active", "--quiet", SERVICE_UNIT)
-    return result.returncode == 0
+def _service_exists() -> bool:
+    return _systemctl_system("cat", SERVICE_UNIT).returncode == 0
 
 
-def _install_helper(helper_path: Path) -> None:
+def _system_service_active() -> bool:
+    return _systemctl_system("is-active", "--quiet", SERVICE_UNIT).returncode == 0
+
+
+def _system_service_enabled() -> bool:
+    return _systemctl_system("is-enabled", "--quiet", SERVICE_UNIT).returncode == 0
+
+
+def _user_service_active() -> bool:
+    return _systemctl_user("is-active", "--quiet", SERVICE_UNIT).returncode == 0
+
+
+def _user_service_enabled() -> bool:
+    return _systemctl_user("is-enabled", "--quiet", SERVICE_UNIT).returncode == 0
+
+
+def _render_system_unit() -> str:
+    return f"""[Unit]
+Description=Rabbit Digger Pro
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+ExecStart="{SYSTEM_HELPER}" "service" "run" "--bind" "{DEFAULT_BIND}"
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _ensure_system_unit() -> None:
+    if os.geteuid() != 0:
+        raise RuntimeError("Decky needs root access to control Game Mode protection")
+    SYSTEM_UNIT.parent.mkdir(parents=True, exist_ok=True)
+    current = SYSTEM_UNIT.read_text() if SYSTEM_UNIT.exists() else None
+    next_unit = _render_system_unit()
+    if current != next_unit:
+        SYSTEM_UNIT.write_text(next_unit)
+    result = _systemctl_system("daemon-reload")
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "systemd reload failed")
+
+
+def _install_user_helper(helper_path: Path) -> None:
     token = _ensure_token()
     result = _run_as_deck(
         [
@@ -190,6 +268,20 @@ def _install_helper(helper_path: Path) -> None:
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "helper install failed")
 
 
+def _install_system_helper(helper_path: Path) -> None:
+    if os.geteuid() != 0:
+        _install_user_helper(helper_path)
+        return
+
+    SYSTEM_HELPER.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = SYSTEM_HELPER.with_suffix(".new")
+    shutil.copy2(helper_path, temp_path)
+    temp_path.chmod(0o755)
+    os.chown(temp_path, 0, 0)
+    temp_path.replace(SYSTEM_HELPER)
+    _ensure_system_unit()
+
+
 def _install_plugin_zip(zip_path: Path) -> bool:
     with tempfile.TemporaryDirectory(prefix="rdp-plugin-") as temp:
         root = Path(temp)
@@ -206,25 +298,194 @@ def _install_plugin_zip(zip_path: Path) -> bool:
     return True
 
 
+def _tun_status() -> dict[str, Any]:
+    result = _run(["ip", "-o", "addr", "show", "dev", TUN_DEVICE])
+    if result.returncode != 0:
+        return {"active": False, "name": TUN_DEVICE, "addresses": []}
+
+    addresses = re.findall(r"\sinet6?\s+([^ ]+)", result.stdout)
+    return {"active": True, "name": TUN_DEVICE, "addresses": addresses}
+
+
+def _dns_status(tun: dict[str, Any]) -> dict[str, Any]:
+    try:
+        content = Path("/etc/resolv.conf").read_text()
+    except Exception as error:
+        return {"active": False, "servers": [], "message": str(error)}
+
+    servers = []
+    for line in content.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == "nameserver":
+            servers.append(parts[1])
+
+    tun_ips = {
+        addr.split("/", 1)[0]
+        for addr in tun.get("addresses", [])
+        if "." in addr and not addr.startswith("127.")
+    }
+    active = bool(tun.get("active")) and any(
+        server in tun_ips or server.startswith("10.99.") for server in servers
+    )
+    rule = _run(["ip", "rule", "show"])
+    dns_rule_active = (
+        rule.returncode == 0
+        and "dport 53" in rule.stdout
+        and f"lookup {TUN_TABLE}" in rule.stdout
+    )
+    if bool(tun.get("active")) and dns_rule_active:
+        active = True
+
+    return {
+        "active": active,
+        "servers": servers,
+        "message": "Captured by tunnel"
+        if dns_rule_active
+        else (", ".join(servers) if servers else "No DNS server found"),
+    }
+
+
+def _protection_state(system_active: bool, tun: dict[str, Any], dns: dict[str, Any]) -> str:
+    if system_active and tun.get("active") and dns.get("active"):
+        return "on"
+    if system_active and tun.get("active"):
+        return "attention"
+    if system_active:
+        return "starting"
+    return "off"
+
+
+def _summary_for_state(state: str) -> str:
+    if state == "on":
+        return "Game traffic is routed through Rabbit Digger Pro."
+    if state == "attention":
+        return "Tunnel is running, but DNS does not look fully attached."
+    if state == "starting":
+        return "Service is running, but the tunnel is not ready yet."
+    return "Game traffic is not routed through Rabbit Digger Pro."
+
+
 def _status_from_manifest(manifest: dict[str, Any] | None = None) -> dict[str, Any]:
     plugin_version = _plugin_version()
     latest = None
     update_available = False
-    last_error = None
 
     if manifest is not None:
         latest = manifest.get("version")
         update_available = bool(latest and latest != plugin_version)
 
+    system_active = _system_service_active()
+    user_active = _user_service_active()
+    tun = _tun_status()
+    dns = _dns_status(tun)
+    state = _protection_state(system_active, tun, dns)
+    system_installed = SYSTEM_HELPER.exists() or _service_exists()
+    user_installed = _helper_binary().exists()
+
     return {
-        "installed": _helper_binary().exists(),
-        "active": _service_active(),
-        "helper_version": "installed" if _helper_binary().exists() else None,
+        "installed": system_installed or user_installed,
+        "install_mode": "system" if system_installed else ("user" if user_installed else "missing"),
+        "active": system_active or user_active,
+        "system_active": system_active,
+        "system_enabled": _system_service_enabled(),
+        "user_active": user_active,
+        "user_enabled": _user_service_enabled(),
+        "tun_active": bool(tun.get("active")),
+        "tun_name": tun.get("name", TUN_DEVICE),
+        "tun_addresses": tun.get("addresses", []),
+        "dns_active": bool(dns.get("active")),
+        "dns_servers": dns.get("servers", []),
+        "protection": state,
+        "summary": _summary_for_state(state),
+        "helper_path": str(SYSTEM_HELPER if system_installed else _helper_binary()),
+        "helper_version": "installed" if system_installed or user_installed else None,
         "plugin_version": plugin_version,
         "update_available": update_available,
         "latest_version": latest,
-        "last_error": last_error,
+        "last_error": None,
     }
+
+
+def _require_system_helper() -> None:
+    if not SYSTEM_HELPER.exists():
+        raise RuntimeError("Rabbit Digger Pro is not installed for Game Mode yet")
+
+
+def _start_tunnel() -> dict[str, Any]:
+    _require_system_helper()
+    _ensure_system_unit()
+    result = _systemctl_system("enable", "--now", SERVICE_UNIT, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to start service")
+    return _status_from_manifest()
+
+
+def _stop_tunnel() -> dict[str, Any]:
+    result = _systemctl_system("stop", SERVICE_UNIT, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to stop service")
+    return _status_from_manifest()
+
+
+def _restart_tunnel() -> dict[str, Any]:
+    _require_system_helper()
+    _ensure_system_unit()
+    result = _systemctl_system("restart", SERVICE_UNIT, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to restart service")
+    return _status_from_manifest()
+
+
+def _message_from_exception(error: Exception) -> str:
+    text = str(error)
+    if not text:
+        return error.__class__.__name__
+    return text
+
+
+def _test_connectivity() -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "ok": False,
+        "dns": {"ok": False, "message": "Not tested"},
+        "github": {"ok": False, "message": "Not tested"},
+        "manifest": {"ok": False, "message": "Not tested"},
+    }
+
+    try:
+        addresses = socket.getaddrinfo("github.com", 443, type=socket.SOCK_STREAM)
+        hosts = sorted({item[4][0] for item in addresses})
+        result["dns"] = {"ok": True, "message": hosts[0] if hosts else "Resolved"}
+    except Exception as error:
+        result["dns"] = {"ok": False, "message": _message_from_exception(error)}
+        return result
+
+    try:
+        with socket.create_connection(("github.com", 443), timeout=8):
+            pass
+        result["github"] = {"ok": True, "message": "GitHub is reachable"}
+    except Exception as error:
+        result["github"] = {"ok": False, "message": _message_from_exception(error)}
+        return result
+
+    try:
+        manifest = _fetch_manifest()
+        version = manifest.get("version") or "latest"
+        result["manifest"] = {"ok": True, "message": f"Latest release: {version}"}
+        result["ok"] = True
+    except Exception as error:
+        result["manifest"] = {"ok": False, "message": _message_from_exception(error)}
+
+    return result
+
+
+def _journal_logs(limit: int = 80) -> str:
+    result = _run(
+        ["journalctl", "-u", SERVICE_UNIT, "--no-pager", "-n", str(limit), "-o", "cat"],
+        timeout=15,
+    )
+    if result.returncode != 0:
+        return result.stderr.strip() or result.stdout.strip() or "No logs available"
+    return result.stdout[-12000:]
 
 
 class Plugin:
@@ -234,13 +495,37 @@ class Plugin:
     async def get_status(self):
         return _status_from_manifest()
 
+    async def start_tunnel(self):
+        try:
+            return _start_tunnel()
+        except Exception as error:
+            status = _status_from_manifest()
+            status["last_error"] = _message_from_exception(error)
+            return status
+
+    async def stop_tunnel(self):
+        try:
+            return _stop_tunnel()
+        except Exception as error:
+            status = _status_from_manifest()
+            status["last_error"] = _message_from_exception(error)
+            return status
+
+    async def restart_tunnel(self):
+        try:
+            return _restart_tunnel()
+        except Exception as error:
+            status = _status_from_manifest()
+            status["last_error"] = _message_from_exception(error)
+            return status
+
     async def check_update(self):
         try:
             manifest = _fetch_manifest()
             return _status_from_manifest(manifest)
         except Exception as error:
             status = _status_from_manifest()
-            status["last_error"] = str(error)
+            status["last_error"] = _message_from_exception(error)
             return status
 
     async def apply_update(self):
@@ -256,8 +541,9 @@ class Plugin:
                     helper_path = temp_dir / "rabbit-digger-pro"
                     _download_verified(helper, helper_path)
                     helper_path.chmod(0o755)
-                    _install_helper(helper_path)
-                    _systemctl_user("restart", SERVICE_UNIT)
+                    _install_system_helper(helper_path)
+                    _systemctl_system("enable", "--now", SERVICE_UNIT, timeout=120)
+                    _systemctl_system("restart", SERVICE_UNIT, timeout=120)
 
                 decky_plugin = manifest.get("decky_plugin")
                 if decky_plugin:
@@ -276,5 +562,11 @@ class Plugin:
                 "ok": False,
                 "version": None,
                 "needs_reload": False,
-                "error": str(error),
+                "error": _message_from_exception(error),
             }
+
+    async def test_connectivity(self):
+        return _test_connectivity()
+
+    async def get_logs(self):
+        return {"logs": _journal_logs()}
