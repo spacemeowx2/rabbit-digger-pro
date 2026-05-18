@@ -53,8 +53,17 @@ rm -rf "$PACKAGE_ROOT"
 mkdir -p "$PACKAGE_ROOT/rabbit-digger-pro"
 cp -R "$PLUGIN_DIR/dist" "$PACKAGE_ROOT/rabbit-digger-pro/dist"
 cp "$PLUGIN_DIR/main.py" "$PACKAGE_ROOT/rabbit-digger-pro/main.py"
-cp "$PLUGIN_DIR/package.json" "$PACKAGE_ROOT/rabbit-digger-pro/package.json"
 cp "$PLUGIN_DIR/plugin.json" "$PACKAGE_ROOT/rabbit-digger-pro/plugin.json"
+python3 - "$PLUGIN_DIR/package.json" "$PACKAGE_ROOT/rabbit-digger-pro/package.json" "$VERSION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source, dest, version = sys.argv[1:]
+package = json.loads(Path(source).read_text(encoding="utf-8"))
+package["version"] = version
+Path(dest).write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+PY
 
 (
   cd "$PACKAGE_ROOT"

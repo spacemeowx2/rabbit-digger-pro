@@ -1,6 +1,8 @@
 name: Steam Deck Release Assets
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       version:
@@ -35,12 +37,54 @@ jobs:
         with:
           version: 10.33.3
 
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_CHANNEL: ${{ github.event.inputs.channel }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            release_tag="$RELEASE_TAG"
+            version="${release_tag#v}"
+            if [ "$RELEASE_PRERELEASE" = "true" ]; then
+              channel="prerelease"
+            else
+              channel="stable"
+            fi
+            upload_assets="true"
+          else
+            version="$INPUT_VERSION"
+            channel="$INPUT_CHANNEL"
+            release_tag="$INPUT_RELEASE_TAG"
+            upload_assets="false"
+            if [ -n "$release_tag" ]; then
+              upload_assets="true"
+            else
+              release_tag="v$version"
+            fi
+          fi
+
+          {
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "release_tag=$release_tag"
+            echo "upload_assets=$upload_assets"
+            echo "release_base_url=https://github.com/${{ github.repository }}/releases/download/$release_tag"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build Steam Deck assets
         run: scripts/build-steamdeck-release.sh
         env:
-          RDP_VERSION: ${{ inputs.version }}
-          RDP_CHANNEL: ${{ inputs.channel }}
-          RDP_RELEASE_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag || format('v{0}', inputs.version) }}
+          RDP_VERSION: ${{ steps.release.outputs.version }}
+          RDP_CHANNEL: ${{ steps.release.outputs.channel }}
+          RDP_RELEASE_BASE_URL: ${{ steps.release.outputs.release_base_url }}
 
       - uses: actions/upload-artifact@v4
         with:
@@ -48,7 +92,7 @@ jobs:
           path: dist/steamdeck/*
 
       - name: Upload assets to GitHub release
-        if: inputs.release_tag != ''
-        run: gh release upload "${{ inputs.release_tag }}" dist/steamdeck/* --clobber
+        if: steps.release.outputs.upload_assets == 'true'
+        run: gh release upload "${{ steps.release.outputs.release_tag }}" dist/steamdeck/* --clobber
         env:
           GH_TOKEN: ${{ github.token }}

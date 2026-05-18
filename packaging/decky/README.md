@@ -19,6 +19,13 @@ The script writes these files to `dist/steamdeck/`:
 - `rabbit-digger-pro-decky.zip`
 - `steamdeck-update-manifest.json`
 
+When a GitHub Release is published, the `Steam Deck Release Assets` workflow
+builds these assets automatically and uploads them to that release. The Decky
+plugin checks the release manifest at `releases/latest/download`, so publishing a
+new stable release is what makes the Quick Access Menu update button pick up a
+new version. The workflow can also be run manually with a `release_tag` to upload
+assets to an existing release.
+
 ## Install On Steam Deck
 
 The bootstrap installer consumes the manifest and installs both the host helper
