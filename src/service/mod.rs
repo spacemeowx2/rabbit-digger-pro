@@ -9,6 +9,8 @@ mod windows;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Parser)]
@@ -22,21 +24,46 @@ pub enum ServiceAction {
         #[clap(long)]
         access_token: Option<String>,
     },
+    /// Install rdp as a user-level service and start it
+    #[cfg(target_os = "linux")]
+    InstallUser {
+        /// Bind address for the API/WebUI server
+        #[clap(long, default_value = "127.0.0.1:9091")]
+        bind: String,
+        /// Access token for API authentication
+        #[clap(long)]
+        access_token: Option<String>,
+        /// Binary to install. Defaults to the current executable.
+        #[clap(long)]
+        binary: Option<PathBuf>,
+    },
     /// Uninstall the system service
     Uninstall,
+    /// Uninstall the user-level service
+    #[cfg(target_os = "linux")]
+    UninstallUser,
     /// Start the installed service
     Start,
+    /// Start the installed user-level service
+    #[cfg(target_os = "linux")]
+    StartUser,
     /// Stop the installed service
     Stop,
+    /// Stop the installed user-level service
+    #[cfg(target_os = "linux")]
+    StopUser,
     /// Show service status
     Status,
+    /// Show user-level service status
+    #[cfg(target_os = "linux")]
+    StatusUser,
     /// Run in daemon mode (called by the service manager)
     Run {
         /// Bind address for the API/WebUI server
         #[clap(long, default_value = "127.0.0.1:9091")]
         bind: String,
         /// Access token for API authentication
-        #[clap(long)]
+        #[clap(long, env = "RD_ACCESS_TOKEN")]
         access_token: Option<String>,
     },
 }

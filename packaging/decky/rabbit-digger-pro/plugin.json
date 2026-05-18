@@ -1,0 +1,11 @@
+{
+  "name": "Rabbit Digger Pro",
+  "author": "spacemeowx2",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["network", "proxy", "steamdeck"],
+    "description": "Steam Deck Gaming Mode controls for Rabbit Digger Pro.",
+    "image": ""
+  }
+}
