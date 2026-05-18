@@ -1,0 +1,54 @@
+name: Steam Deck Release Assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version used in the Steam Deck update manifest"
+        required: true
+        default: "0.1.0"
+      channel:
+        description: "Update channel"
+        required: true
+        default: "dev"
+      release_tag:
+        description: "Optional GitHub release tag to upload assets to, for example v0.1.0"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
+
+      - name: Build Steam Deck assets
+        run: scripts/build-steamdeck-release.sh
+        env:
+          RDP_VERSION: ${{ inputs.version }}
+          RDP_CHANNEL: ${{ inputs.channel }}
+          RDP_RELEASE_BASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ inputs.release_tag || format('v{0}', inputs.version) }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steamdeck-release-assets
+          path: dist/steamdeck/*
+
+      - name: Upload assets to GitHub release
+        if: inputs.release_tag != ''
+        run: gh release upload "${{ inputs.release_tag }}" dist/steamdeck/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

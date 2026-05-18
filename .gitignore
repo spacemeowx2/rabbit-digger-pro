@@ -5,6 +5,8 @@
 *.rd.yml
 *.dat
 *.log
+*.pyc
+__pycache__/
 dist/
 node_modules/
 docs/node_modules/
