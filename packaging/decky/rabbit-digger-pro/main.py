@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -6,6 +7,7 @@ import re
 import secrets
 import shutil
 import socket
+import struct
 import subprocess
 import tempfile
 import urllib.request
@@ -17,6 +19,9 @@ from typing import Any
 PLUGIN_DIR = Path(__file__).resolve().parent
 SERVICE_UNIT = "rabbit-digger-pro.service"
 DEFAULT_BIND = "127.0.0.1:9091"
+DAEMON_HOST = "127.0.0.1"
+DAEMON_PORT = 9091
+DAEMON_RPC_PATH = "/api/rpc"
 TUN_DEVICE = "tun-rdp"
 TUN_TABLE = "2468"
 SYSTEM_HELPER = Path("/var/lib/rabbit_digger_pro/bin/rabbit-digger-pro")
@@ -25,6 +30,7 @@ DEFAULT_MANIFEST_URL = (
     "https://github.com/spacemeowx2/rabbit-digger-pro/releases/latest/download/"
     "steamdeck-update-manifest.json"
 )
+LAST_SOURCE_KEY = "daemon/last_source"
 
 
 def _user_home() -> Path:
@@ -187,6 +193,149 @@ def _download_verified(asset: dict[str, Any], dest: Path) -> None:
         raise RuntimeError(f"checksum mismatch for {url}")
 
 
+def _read_http_headers(sock: socket.socket) -> bytes:
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+        if len(data) > 65536:
+            raise RuntimeError("daemon websocket handshake is too large")
+    return data
+
+
+def _send_ws_text(sock: socket.socket, text: str) -> None:
+    payload = text.encode("utf-8")
+    mask = os.urandom(4)
+    header = bytearray([0x81])
+    length = len(payload)
+    if length < 126:
+        header.append(0x80 | length)
+    elif length <= 0xFFFF:
+        header.append(0x80 | 126)
+        header.extend(struct.pack("!H", length))
+    else:
+        header.append(0x80 | 127)
+        header.extend(struct.pack("!Q", length))
+    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+    sock.sendall(bytes(header) + mask + masked)
+
+
+def _recv_exact(sock: socket.socket, length: int) -> bytes:
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise RuntimeError("daemon websocket closed")
+        data += chunk
+    return data
+
+
+def _recv_ws_text(sock: socket.socket) -> str:
+    while True:
+        first, second = _recv_exact(sock, 2)
+        opcode = first & 0x0F
+        masked = bool(second & 0x80)
+        length = second & 0x7F
+        if length == 126:
+            length = struct.unpack("!H", _recv_exact(sock, 2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", _recv_exact(sock, 8))[0]
+
+        mask = _recv_exact(sock, 4) if masked else b""
+        payload = _recv_exact(sock, length)
+        if masked:
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+
+        if opcode == 0x1:
+            return payload.decode("utf-8")
+        if opcode == 0x8:
+            raise RuntimeError("daemon websocket closed")
+        if opcode == 0x9:
+            sock.sendall(bytes([0x8A, len(payload)]) + payload)
+
+
+def _daemon_rpc(method: str, params: Any | None = None, timeout: int = 10) -> Any:
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request_id = secrets.randbits(31)
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params if params is not None else {},
+    }
+
+    with socket.create_connection((DAEMON_HOST, DAEMON_PORT), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(
+            (
+                f"GET {DAEMON_RPC_PATH} HTTP/1.1\r\n"
+                f"Host: {DAEMON_HOST}:{DAEMON_PORT}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
+            ).encode("ascii")
+        )
+        headers = _read_http_headers(sock)
+        if b" 101 " not in headers.split(b"\r\n", 1)[0]:
+            raise RuntimeError("daemon API is not accepting websocket RPC")
+
+        _send_ws_text(sock, json.dumps(payload))
+        while True:
+            message = json.loads(_recv_ws_text(sock))
+            if message.get("id") != request_id:
+                continue
+            if message.get("error"):
+                error = message["error"]
+                detail = error.get("data") or error.get("message") or "daemon RPC failed"
+                raise RuntimeError(str(detail))
+            return message.get("result")
+
+
+def _daemon_available() -> bool:
+    try:
+        _daemon_rpc("config.get", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _last_source() -> Any:
+    item = _daemon_rpc("userdata.get", {"path": LAST_SOURCE_KEY})
+    content = item.get("content") if isinstance(item, dict) else None
+    if not content:
+        raise RuntimeError("No saved game proxy configuration found")
+    return json.loads(content)
+
+
+def _apply_last_source() -> None:
+    _daemon_rpc("config.apply", _last_source(), timeout=30)
+
+
+def _stop_engine_via_daemon() -> None:
+    _daemon_rpc("engine.stop", {}, timeout=15)
+
+
+def _logs_via_daemon(limit: int = 80) -> str:
+    entries = _daemon_rpc("logs.tail", {"tail": limit}, timeout=15)
+    if not isinstance(entries, list):
+        return "No logs available"
+    lines = []
+    for entry in entries[-limit:]:
+        if isinstance(entry, dict):
+            message = entry.get("fields", {}).get("message") or entry.get("message")
+            target = entry.get("target")
+            level = entry.get("level")
+            parts = [str(part) for part in [level, target, message] if part]
+            lines.append(" ".join(parts) if parts else json.dumps(entry, ensure_ascii=False))
+        else:
+            lines.append(str(entry))
+    return "\n".join(lines) or "No logs available"
+
+
 def _fetch_manifest() -> dict[str, Any]:
     manifest_url = _load_update_config().get("manifest_url", DEFAULT_MANIFEST_URL)
     with tempfile.TemporaryDirectory(prefix="rdp-manifest-") as temp:
@@ -237,7 +386,9 @@ WantedBy=multi-user.target
 
 def _ensure_system_unit() -> None:
     if os.geteuid() != 0:
-        raise RuntimeError("Decky needs root access to control Game Mode protection")
+        raise RuntimeError(
+            "Decky Loader is not running with system permission. Restart or reinstall Decky Loader, then try again."
+        )
     SYSTEM_UNIT.parent.mkdir(parents=True, exist_ok=True)
     current = SYSTEM_UNIT.read_text() if SYSTEM_UNIT.exists() else None
     next_unit = _render_system_unit()
@@ -413,26 +564,30 @@ def _require_system_helper() -> None:
 
 def _start_tunnel() -> dict[str, Any]:
     _require_system_helper()
-    _ensure_system_unit()
-    result = _systemctl_system("enable", "--now", SERVICE_UNIT, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to start service")
+    if not _daemon_available():
+        _ensure_system_unit()
+        result = _systemctl_system("enable", "--now", SERVICE_UNIT, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to start daemon")
+    _apply_last_source()
     return _status_from_manifest()
 
 
 def _stop_tunnel() -> dict[str, Any]:
-    result = _systemctl_system("stop", SERVICE_UNIT, timeout=60)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to stop service")
+    _stop_engine_via_daemon()
     return _status_from_manifest()
 
 
 def _restart_tunnel() -> dict[str, Any]:
     _require_system_helper()
-    _ensure_system_unit()
-    result = _systemctl_system("restart", SERVICE_UNIT, timeout=120)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to restart service")
+    if not _daemon_available():
+        _ensure_system_unit()
+        result = _systemctl_system("enable", "--now", SERVICE_UNIT, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "failed to start daemon")
+    else:
+        _stop_engine_via_daemon()
+    _apply_last_source()
     return _status_from_manifest()
 
 
@@ -452,17 +607,27 @@ def _test_connectivity() -> dict[str, Any]:
     }
 
     try:
-        addresses = socket.getaddrinfo("github.com", 443, type=socket.SOCK_STREAM)
-        hosts = sorted({item[4][0] for item in addresses})
-        result["dns"] = {"ok": True, "message": hosts[0] if hosts else "Resolved"}
-    except Exception as error:
-        result["dns"] = {"ok": False, "message": _message_from_exception(error)}
-        return result
-
-    try:
-        with socket.create_connection(("github.com", 443), timeout=8):
-            pass
-        result["github"] = {"ok": True, "message": "GitHub is reachable"}
+        delay = _daemon_rpc(
+            "net.delay",
+            {
+                "net_name": "rdp_selected",
+                "url": "https://github.com/spacemeowx2/rabbit-digger-pro/releases/latest/download/steamdeck-update-manifest.json",
+                "timeout": 8000,
+            },
+            timeout=12,
+        )
+        if delay:
+            connect = delay.get("connect")
+            response = delay.get("response")
+            result["dns"] = {"ok": True, "message": "Resolved by daemon"}
+            result["github"] = {
+                "ok": True,
+                "message": f"Connected in {connect} ms, response in {response} ms",
+            }
+        else:
+            result["dns"] = {"ok": True, "message": "Daemon route tested"}
+            result["github"] = {"ok": False, "message": "No response through selected proxy"}
+            return result
     except Exception as error:
         result["github"] = {"ok": False, "message": _message_from_exception(error)}
         return result
@@ -479,6 +644,11 @@ def _test_connectivity() -> dict[str, Any]:
 
 
 def _journal_logs(limit: int = 80) -> str:
+    try:
+        return _logs_via_daemon(limit)
+    except Exception:
+        pass
+
     result = _run(
         ["journalctl", "-u", SERVICE_UNIT, "--no-pager", "-n", str(limit), "-o", "cat"],
         timeout=15,

@@ -74,14 +74,14 @@ const stateCopy: Record<
   { title: string; tone: string; color: string; background: string }
 > = {
   on: {
-    title: "Ready for games",
-    tone: "All game traffic is being routed.",
+    title: "Game proxy is on",
+    tone: "Games are using Rabbit Digger Pro.",
     color: "#7ee787",
     background: "rgba(126, 231, 135, 0.12)",
   },
   attention: {
     title: "Needs attention",
-    tone: "Traffic is routed, but DNS may not be fully attached.",
+    tone: "The tunnel is running, but DNS needs a check.",
     color: "#ffd166",
     background: "rgba(255, 209, 102, 0.13)",
   },
@@ -92,7 +92,7 @@ const stateCopy: Record<
     background: "rgba(158, 203, 255, 0.12)",
   },
   off: {
-    title: "Off",
+    title: "Game proxy is off",
     tone: "Games are using the normal network.",
     color: "#ff8a8a",
     background: "rgba(255, 138, 138, 0.12)",
@@ -345,11 +345,12 @@ function Content() {
   }, []);
 
   const isBusy = busy !== null;
-  const protectionOn = status?.system_active ?? false;
+  const statusReady = status !== null;
+  const protectionOn = Boolean(status?.system_active || status?.tun_active);
 
   return (
     <>
-      <PanelSection title="Game Protection">
+      <PanelSection title="Game Proxy">
         <PanelSectionRow>
           <StatusCard status={status} />
         </PanelSectionRow>
@@ -362,14 +363,18 @@ function Content() {
           <ButtonItem
             layout="below"
             icon={protectionOn ? <FaRedo /> : <FaPlay />}
-            disabled={isBusy}
+            disabled={isBusy || !statusReady}
             onClick={() =>
               protectionOn
-                ? runStatusAction("restart", restartTunnel, "Protection restarted")
-                : runStatusAction("start", startTunnel, "Protection is on")
+                ? runStatusAction("restart", restartTunnel, "Game proxy restarted")
+                : runStatusAction("start", startTunnel, "Game proxy is on")
             }
           >
-            {protectionOn ? "Restart Protection" : "Turn On Protection"}
+            {!statusReady
+              ? "Loading Status"
+              : protectionOn
+                ? "Restart Game Proxy"
+                : "Turn On Game Proxy"}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -377,9 +382,9 @@ function Content() {
             layout="below"
             icon={<FaStop />}
             disabled={isBusy || !protectionOn}
-            onClick={() => runStatusAction("stop", stopTunnel, "Protection is off")}
+            onClick={() => runStatusAction("stop", stopTunnel, "Game proxy is off")}
           >
-            Turn Off Protection
+            Turn Off Game Proxy
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
