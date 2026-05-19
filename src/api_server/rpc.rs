@@ -1,5 +1,8 @@
 use std::{
     collections::HashMap,
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
     str::from_utf8,
     time::{Duration, Instant},
 };
@@ -16,6 +19,7 @@ use rabbit_digger::{RabbitDigger, ServerEvent, Uuid};
 use rd_interface::IntoAddress;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
@@ -118,8 +122,47 @@ struct TailLogsParams {
     tail: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateApplyParams {
+    #[serde(default = "default_apply_update")]
+    apply: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdatePlan {
+    manifest_url: String,
+    #[serde(default)]
+    components: Vec<UpdateComponent>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct UpdateComponent {
+    source: String,
+    kind: UpdateInstallKind,
+    path: PathBuf,
+    #[serde(default)]
+    executable: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum UpdateInstallKind {
+    File,
+    ZipDir,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateAsset {
+    url: String,
+    sha256: String,
+}
+
 fn default_tail() -> usize {
     500
+}
+
+fn default_apply_update() -> bool {
+    true
 }
 
 pub(super) async fn ws_rpc(
@@ -382,6 +425,11 @@ async fn handle_request(request: RpcRequest, ctx: &Ctx) -> RpcResponse {
         }
         "userdata.list" => userdata_list(ctx).await,
         "engine.stop" => engine_stop(ctx).await.map(|_| json!({ "ok": true })),
+        "update.apply" => {
+            let params: UpdateApplyParams =
+                serde_json::from_value(request.params).unwrap_or(UpdateApplyParams { apply: true });
+            update_apply(params).await
+        }
         "logs.tail" => {
             let params: TailLogsParams =
                 serde_json::from_value(request.params).unwrap_or(TailLogsParams {
@@ -560,6 +608,53 @@ async fn engine_stop(ctx: &Ctx) -> Result<(), ApiError> {
     Ok(())
 }
 
+async fn update_apply(params: UpdateApplyParams) -> Result<JsonValue, ApiError> {
+    let plan = load_update_plan()?;
+    let manifest = fetch_update_manifest(&plan.manifest_url).await?;
+    let version = manifest
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned);
+
+    if !params.apply {
+        return Ok(json!({
+            "ok": true,
+            "version": version,
+            "needs_reload": false,
+            "installed": [],
+            "error": JsonValue::Null,
+        }));
+    }
+
+    let mut installed = Vec::new();
+    let mut needs_reload = false;
+    for component in &plan.components {
+        let Some(asset) = manifest
+            .get(&component.source)
+            .and_then(|value| serde_json::from_value::<UpdateAsset>(value.clone()).ok())
+        else {
+            continue;
+        };
+        let bytes = download_verified_asset(&asset).await?;
+        match component.kind {
+            UpdateInstallKind::File => install_file_component(component, &bytes)?,
+            UpdateInstallKind::ZipDir => {
+                install_zip_dir_component(component, &bytes)?;
+                needs_reload = true;
+            }
+        }
+        installed.push(component.source.clone());
+    }
+
+    Ok(json!({
+        "ok": true,
+        "version": version,
+        "needs_reload": needs_reload,
+        "installed": installed,
+        "error": JsonValue::Null,
+    }))
+}
+
 async fn logs_tail(ctx: &Ctx, tail: usize) -> Result<JsonValue, ApiError> {
     let path = ctx
         .log_file_path
@@ -575,6 +670,167 @@ async fn logs_tail(ctx: &Ctx, tail: usize) -> Result<JsonValue, ApiError> {
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
     Ok(JsonValue::Array(entries))
+}
+
+fn load_update_plan() -> Result<UpdatePlan, ApiError> {
+    let path = crate::util::app_dirs::config_dir().join("update.json");
+    let content = fs::read_to_string(&path).map_err(|error| {
+        ApiError::Anyhow(anyhow::anyhow!(
+            "Update plan is not installed at {}: {}",
+            path.display(),
+            error
+        ))
+    })?;
+    serde_json::from_str(&content).map_err(ApiError::other)
+}
+
+async fn fetch_update_manifest(url: &str) -> Result<JsonValue, ApiError> {
+    let response = reqwest::Client::builder()
+        .user_agent("rabbit-digger-pro")
+        .build()
+        .map_err(ApiError::other)?
+        .get(url)
+        .send()
+        .await
+        .map_err(ApiError::other)?
+        .error_for_status()
+        .map_err(ApiError::other)?;
+    response.json().await.map_err(ApiError::other)
+}
+
+async fn download_verified_asset(asset: &UpdateAsset) -> Result<Vec<u8>, ApiError> {
+    let response = reqwest::Client::builder()
+        .user_agent("rabbit-digger-pro")
+        .build()
+        .map_err(ApiError::other)?
+        .get(&asset.url)
+        .send()
+        .await
+        .map_err(ApiError::other)?
+        .error_for_status()
+        .map_err(ApiError::other)?;
+    let bytes = response.bytes().await.map_err(ApiError::other)?.to_vec();
+    let actual = sha256_hex(&bytes);
+    if actual != asset.sha256.to_ascii_lowercase() {
+        return Err(ApiError::Anyhow(anyhow::anyhow!(
+            "Checksum mismatch for {}",
+            asset.url
+        )));
+    }
+    Ok(bytes)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn install_file_component(component: &UpdateComponent, bytes: &[u8]) -> Result<(), ApiError> {
+    ensure_update_path(&component.path)?;
+    if let Some(parent) = component.path.parent() {
+        fs::create_dir_all(parent).map_err(ApiError::other)?;
+    }
+    let temp = component.path.with_extension("new");
+    fs::write(&temp, bytes).map_err(ApiError::other)?;
+    if component.executable {
+        set_executable(&temp)?;
+    }
+    fs::rename(&temp, &component.path).map_err(ApiError::other)?;
+    Ok(())
+}
+
+fn install_zip_dir_component(component: &UpdateComponent, bytes: &[u8]) -> Result<(), ApiError> {
+    ensure_update_path(&component.path)?;
+    let temp_root = env::temp_dir().join(format!("rdp-update-{}", Uuid::new_v4()));
+    let archive_path = temp_root.join("component.zip");
+    let extract_path = temp_root.join("extract");
+    fs::create_dir_all(&extract_path).map_err(ApiError::other)?;
+    fs::write(&archive_path, bytes).map_err(ApiError::other)?;
+
+    let output = Command::new("unzip")
+        .arg("-q")
+        .arg(&archive_path)
+        .arg("-d")
+        .arg(&extract_path)
+        .output()
+        .map_err(ApiError::other)?;
+    if !output.status.success() {
+        let _ = fs::remove_dir_all(&temp_root);
+        return Err(ApiError::Anyhow(anyhow::anyhow!(
+            "Failed to extract update package: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let source = single_child_dir(&extract_path).unwrap_or(extract_path.clone());
+    if component.path.exists() {
+        fs::remove_dir_all(&component.path).map_err(ApiError::other)?;
+    }
+    if let Some(parent) = component.path.parent() {
+        fs::create_dir_all(parent).map_err(ApiError::other)?;
+    }
+    copy_dir_all(&source, &component.path)?;
+    let _ = fs::remove_dir_all(&temp_root);
+    Ok(())
+}
+
+fn ensure_update_path(path: &Path) -> Result<(), ApiError> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let allowed_roots = [
+        crate::util::app_dirs::data_dir(),
+        crate::util::app_dirs::config_dir(),
+        home.join("homebrew/plugins"),
+        PathBuf::from("/home/deck/homebrew/plugins"),
+    ];
+    if allowed_roots.iter().any(|root| path.starts_with(root)) {
+        return Ok(());
+    }
+    Err(ApiError::Anyhow(anyhow::anyhow!(
+        "Update target is outside allowed application directories: {}",
+        path.display()
+    )))
+}
+
+fn single_child_dir(path: &Path) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(path)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    if entries.len() == 1 {
+        entries.pop()
+    } else {
+        None
+    }
+}
+
+fn copy_dir_all(source: &Path, target: &Path) -> Result<(), ApiError> {
+    fs::create_dir_all(target).map_err(ApiError::other)?;
+    for entry in fs::read_dir(source).map_err(ApiError::other)? {
+        let entry = entry.map_err(ApiError::other)?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_dir_all(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path).map_err(ApiError::other)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_executable(path: &Path) -> Result<(), ApiError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path).map_err(ApiError::other)?.permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).map_err(ApiError::other)
+}
+
+#[cfg(not(unix))]
+fn set_executable(_path: &Path) -> Result<(), ApiError> {
+    Ok(())
 }
 
 async fn engine_events_subscription(

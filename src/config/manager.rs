@@ -274,13 +274,16 @@ import:
         let source = ImportSource::Text(format!(
             r#"
 id: base
-net: {{}}
+net:
+  node_out:
+    type: local
 server: {{}}
 import:
   - type: clash
     source:
       path: {clash_path}
     select: imported
+    net: node_out
 "#
         ));
 
@@ -292,6 +295,24 @@ import:
 
         assert_eq!(cfg.net.get("vless-a").unwrap().net_type, "vless");
         assert_eq!(cfg.net.get("trojan-a").unwrap().net_type, "trojan");
+        assert_eq!(
+            cfg.net
+                .get("vless-a")
+                .unwrap()
+                .opt
+                .get("net")
+                .and_then(|v| v.as_str()),
+            Some("node_out")
+        );
+        assert_eq!(
+            cfg.net
+                .get("trojan-a")
+                .unwrap()
+                .opt
+                .get("net")
+                .and_then(|v| v.as_str()),
+            Some("node_out")
+        );
 
         let imported = cfg.net.get("imported").unwrap();
         assert_eq!(imported.net_type, "select");

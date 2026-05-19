@@ -14,8 +14,7 @@ DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 RDP_DATA_DIR="$DATA_HOME/rabbit_digger_pro"
 RDP_CONFIG_DIR="$CONFIG_HOME/rabbit_digger_pro"
-TOKEN_PATH="$RDP_DATA_DIR/decky-token"
-UPDATE_CONFIG_PATH="$RDP_CONFIG_DIR/decky-update.json"
+UPDATE_CONFIG_PATH="$RDP_CONFIG_DIR/update.json"
 PLUGIN_DIR="$HOME/homebrew/plugins/rabbit-digger-pro"
 HELPER_DIR="$RDP_DATA_DIR/helper"
 HELPER_PATH="$HELPER_DIR/rabbit-digger-pro"
@@ -154,19 +153,6 @@ install_or_update() {
 
   mkdir -p "$RDP_DATA_DIR" "$RDP_CONFIG_DIR"
 
-  if [ ! -f "$TOKEN_PATH" ]; then
-    python3 - "$TOKEN_PATH" <<'PY'
-import secrets
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-path.write_text(secrets.token_urlsafe(32), encoding="utf-8")
-path.chmod(0o600)
-PY
-  fi
-
-  TOKEN="$(cat "$TOKEN_PATH")"
   TMP_DIR="$(mktemp -d)"
   DECKY_READY=0
 
@@ -195,7 +181,6 @@ PY
 
   "$HELPER_TMP" service install-user \
     --bind "$BIND" \
-    --access-token "$TOKEN" \
     --binary "$HELPER_TMP"
 
   download_verified "$PLUGIN_URL" "$PLUGIN_SHA" "$PLUGIN_TMP"
@@ -214,14 +199,29 @@ PY
 
   restart_decky_loader_if_running
 
-  python3 - "$UPDATE_CONFIG_PATH" "$MANIFEST_URL" <<'PY'
+  python3 - "$UPDATE_CONFIG_PATH" "$MANIFEST_URL" "$HELPER_PATH" "$PLUGIN_DIR" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps({"manifest_url": sys.argv[2]}, indent=2), encoding="utf-8")
+path.write_text(json.dumps({
+    "manifest_url": sys.argv[2],
+    "components": [
+        {
+            "source": "helper",
+            "kind": "file",
+            "path": sys.argv[3],
+            "executable": True,
+        },
+        {
+            "source": "decky_plugin",
+            "kind": "zip-dir",
+            "path": sys.argv[4],
+        },
+    ],
+}, indent=2), encoding="utf-8")
 PY
 
   echo "Rabbit Digger Pro installed."
@@ -248,7 +248,7 @@ uninstall_rdp() {
   fi
 
   rm -rf "$PLUGIN_DIR"
-  rm -f "$TOKEN_PATH" "$UPDATE_CONFIG_PATH"
+  rm -f "$UPDATE_CONFIG_PATH" "$RDP_CONFIG_DIR/decky-update.json"
   rmdir "$HELPER_DIR" "$RDP_DATA_DIR" "$RDP_CONFIG_DIR" 2>/dev/null || true
   restart_decky_loader_if_running
 

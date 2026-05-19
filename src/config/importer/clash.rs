@@ -31,6 +31,7 @@ pub struct Clash {
     prefix: Option<String>,
     direct: Option<String>,
     reject: Option<String>,
+    net: Option<String>,
 
     #[serde(default)]
     disable_proxy_group: bool,
@@ -132,15 +133,28 @@ fn ghost_net() -> Net {
     )
 }
 
-fn with_net(mut net: Net, target_net: Option<Net>) -> Net {
+fn with_net(mut net: Net, target_net: Option<Value>) -> Net {
     if let (Some(obj), Some(target_net)) = (net.opt.as_object_mut(), target_net) {
-        obj.insert("net".to_string(), serde_json::to_value(target_net).unwrap());
+        obj.insert("net".to_string(), target_net);
     }
     net
 }
 
 impl Clash {
-    fn proxy_to_net(&self, p: Proxy, target_net: Option<Net>) -> Result<Net> {
+    fn proxy_target_net(&self) -> Option<Value> {
+        self.net.as_ref().map(|net| json!(net))
+    }
+
+    fn base_proxy_net(&self) -> Net {
+        Net::new(
+            "alias",
+            json!({
+                "net": self.net.as_deref().unwrap_or("local")
+            }),
+        )
+    }
+
+    fn proxy_to_net(&self, p: Proxy, target_net: Option<Value>) -> Result<Net> {
         // TODO: http and socks5 has limited support
         let net: Net = match p.proxy_type.as_ref() {
             "ss" => {
@@ -166,13 +180,7 @@ impl Clash {
                             .unwrap_or_default();
 
                         let obfs_net = with_net(
-                            Net::new(
-                                "obfs",
-                                json!({
-                                    "obfs_mode": obfs_mode,
-                                    "net": target_net,
-                                }),
-                            ),
+                            Net::new("obfs", json!({ "obfs_mode": obfs_mode })),
                             target_net,
                         );
 
@@ -404,23 +412,15 @@ impl Clash {
                 )
             }
             "relay" => {
-                let net = net_list.iter().try_fold(
-                    Net::new(
-                        "alias",
-                        json!({
-                            "net": "local"
-                        }),
-                    ),
-                    |acc, x| {
-                        let proxy = proxy_map.get(x).ok_or(anyhow!(
-                            "proxy {} not found in proxy group {}",
-                            x,
-                            p.name
-                        ))?;
+                let net = net_list.iter().try_fold(self.base_proxy_net(), |acc, x| {
+                    let proxy = proxy_map.get(x).ok_or(anyhow!(
+                        "proxy {} not found in proxy group {}",
+                        x,
+                        p.name
+                    ))?;
 
-                        self.proxy_to_net(proxy.clone(), Some(acc))
-                    },
-                )?;
+                    self.proxy_to_net(proxy.clone(), Some(serde_json::to_value(acc)?))
+                })?;
 
                 net
             }
@@ -573,7 +573,7 @@ impl Importer for Clash {
             added_proxies.push(name.clone());
             self.name_map.insert(old_name.clone(), name.clone());
             proxy_map.insert(old_name.clone(), p.clone());
-            match self.proxy_to_net(p, None) {
+            match self.proxy_to_net(p, self.proxy_target_net()) {
                 Ok(p) => {
                     config.net.insert(name, p);
                 }
@@ -666,6 +666,7 @@ mod tests {
             prefix: None,
             direct: None,
             reject: None,
+            net: None,
             disable_proxy_group: false,
             select: None,
             name_map: BTreeMap::new(),
@@ -690,6 +691,7 @@ mod tests {
             prefix: None,
             direct: None,
             reject: None,
+            net: None,
             disable_proxy_group: false,
             select: None,
             name_map: BTreeMap::new(),
@@ -707,6 +709,34 @@ mod tests {
 
         let err = c.get_target("Missing").unwrap_err();
         assert!(err.to_string().contains("Name not found"));
+    }
+
+    #[tokio::test]
+    async fn test_importer_clash_net_sets_proxy_underlay() {
+        let mut clash = base_clash();
+        clash.net = Some("node_out".to_string());
+
+        let content = r#"
+proxies:
+  - name: anytls-a
+    type: anytls
+    server: example.com
+    port: 443
+    password: secret
+proxy-groups: []
+rules: []
+"#;
+
+        let mut config = Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        clash.process(&mut config, content, &cache).await.unwrap();
+
+        let net = config.net.get("anytls-a").unwrap();
+        assert_eq!(net.net_type, "anytls");
+        assert_eq!(
+            net.opt.get("net").and_then(|v| v.as_str()),
+            Some("node_out")
+        );
     }
 
     #[test]
