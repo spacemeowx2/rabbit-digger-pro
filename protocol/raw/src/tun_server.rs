@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, SocketAddr, SocketAddrV4},
     str::FromStr,
 };
 
@@ -179,7 +179,7 @@ impl IServer for TunServer {
 
         // 5. Bind listeners and serve traffic
         let tcp_listener = smoltcp_net
-            .tcp_bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 1).into())
+            .tcp_bind(SocketAddrV4::new(ip_addr, 1).into())
             .await
             .map_err(|e| rd_interface::Error::other(format!("TCP bind: {e}")))?;
 
@@ -234,29 +234,40 @@ impl TunHandler {
                 let fake_ip = self.fake_ip.clone();
 
                 tokio::spawn(async move {
-                    let ctx = &mut Context::from_socketaddr(addr);
+                    let result = async {
+                        let ctx = &mut Context::from_socketaddr(addr);
 
-                    let target_addr = if fake_ip.contains(&IpAddr::V4(*orig_addr.ip())) {
-                        if let Some(domain) = fake_ip.lookup(*orig_addr.ip()) {
-                            (domain.as_str(), orig_addr.port()).into_address()?
+                        let target_addr = if fake_ip.contains(&IpAddr::V4(*orig_addr.ip())) {
+                            if let Some(domain) = fake_ip.lookup(*orig_addr.ip()) {
+                                (domain.as_str(), orig_addr.port()).into_address()?
+                            } else {
+                                SocketAddr::from(orig_addr).into_address()?
+                            }
                         } else {
                             SocketAddr::from(orig_addr).into_address()?
-                        }
-                    } else {
-                        SocketAddr::from(orig_addr).into_address()?
-                    };
+                        };
 
-                    let target = net.tcp_connect(ctx, &target_addr).await?;
-                    tracing::debug!("Bridging TUN TCP {} ↔ {}", addr, target_addr);
-                    match ctx
-                        .connect_tcp(rd_interface::TcpStream::from(tcp), target)
-                        .await
-                    {
-                        Ok(()) => tracing::debug!("TCP bridge closed normally for {}", addr),
-                        Err(e) => tracing::warn!("TCP bridge error for {}: {e}", addr),
+                        let target = net.tcp_connect(ctx, &target_addr).await?;
+                        tracing::debug!("Bridging TUN TCP {} ↔ {}", addr, target_addr);
+                        match ctx
+                            .connect_tcp(rd_interface::TcpStream::from(tcp), target)
+                            .await
+                        {
+                            Ok(()) => tracing::debug!("TCP bridge closed normally for {}", addr),
+                            Err(e) => tracing::warn!("TCP bridge error for {}: {e}", addr),
+                        }
+                        Ok(()) as Result<()>
                     }
-                    Ok(()) as Result<()>
+                    .await;
+
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            "TUN TCP forwarding failed for {addr} -> {orig_addr}: {error}"
+                        );
+                    }
                 });
+            } else {
+                tracing::warn!("TUN TCP original destination missing for {addr}");
             }
         }
     }

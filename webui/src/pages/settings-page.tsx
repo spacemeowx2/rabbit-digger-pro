@@ -17,12 +17,14 @@ interface Subscription {
 }
 
 type DnsMode = 'fake-ip' | 'redir-host'
+type BootstrapDns = 'cloudflare' | 'google'
 
 interface DaemonSettings {
   subscriptions: Subscription[]
   /** Index of the active subscription (-1 or undefined = none) */
   activeIndex: number
   port: number
+  bootstrapDns: BootstrapDns
   tunEnabled: boolean
   tunDnsMode: DnsMode
   tunIp: string
@@ -33,6 +35,7 @@ const DEFAULT_SETTINGS: DaemonSettings = {
   subscriptions: [],
   activeIndex: 0,
   port: 10800,
+  bootstrapDns: 'cloudflare',
   tunEnabled: false,
   tunDnsMode: 'fake-ip',
   tunIp: '',
@@ -71,7 +74,28 @@ function formatRelativeTime(dateStr?: string): string {
 }
 
 function buildConfigText(settings: DaemonSettings): string {
-  const net: Record<string, unknown> = { local: { type: 'local' } }
+  const localNet: Record<string, unknown> = { type: 'local' }
+  const bootstrapOutNet: Record<string, unknown> = { type: 'local' }
+  if (settings.tunEnabled) {
+    // fwmark on host-side local nets to bypass TUN routing (prevents routing loop)
+    localNet.mark = 255
+    bootstrapOutNet.mark = 255
+  }
+
+  const net: Record<string, unknown> = {
+    local: localNet,
+    rdp_bootstrap_out: bootstrapOutNet,
+    rdp_bootstrap_dns: {
+      type: 'dns',
+      server: settings.bootstrapDns,
+      net: 'rdp_bootstrap_out',
+    },
+    rdp_node_out: {
+      type: 'local',
+      ...(settings.tunEnabled ? { mark: 255 } : {}),
+      lookup_host: 'rdp_bootstrap_dns',
+    },
+  }
   const server: Record<string, unknown> = {}
   const imports: unknown[] = []
 
@@ -83,6 +107,7 @@ function buildConfigText(settings: DaemonSettings): string {
         poll: { url: activeSub.url, interval: activeSub.interval * 60 },
       },
       select: 'proxy',
+      net: 'rdp_node_out',
     })
   } else {
     net['proxy'] = { type: 'alias', net: 'local' }
@@ -91,8 +116,6 @@ function buildConfigText(settings: DaemonSettings): string {
   const outboundNet = 'proxy'
 
   if (settings.tunEnabled) {
-    // fwmark on local net to bypass TUN routing (prevents routing loop)
-    net['local'] = { type: 'local', mark: 255 }
     net['resolve'] = { type: 'resolve', net: outboundNet, resolve_net: 'local', ipv6: false }
     const tunConfig: Record<string, unknown> = {
       type: 'tun',
@@ -533,6 +556,21 @@ export function SettingsPage({ runtimeState }: SettingsPageProps) {
               onBlur={() => void saveSettings(settings)}
             />
             <span className="text-xs text-slate-400">127.0.0.1:{settings.port}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="text-sm text-slate-600 w-32 shrink-0">节点 DNS</label>
+            <select
+              className="field w-40"
+              value={settings.bootstrapDns}
+              onChange={(e) => {
+                const next = { ...settings, bootstrapDns: e.target.value as BootstrapDns }
+                setSettings(next)
+                void saveSettings(next)
+              }}
+            >
+              <option value="cloudflare">Cloudflare</option>
+              <option value="google">Google</option>
+            </select>
           </div>
         </div>
       </section>

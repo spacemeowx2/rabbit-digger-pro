@@ -32,6 +32,7 @@ serde_yaml = "0.9.33"
 yaml-merge-keys = { version = "0.8.2", features = ["serde_yaml"] }
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.10.9"
 rd-interface = { path = "./rd-interface/", version = "0.4" }
 rd-std = { path = "./rd-std/", version = "0.1" }
 cfg-if = "1.0.4"

@@ -16,6 +16,16 @@ pub fn data_dir() -> PathBuf {
         .join(PROGRAM_DIR)
 }
 
+/// Application configuration directory.
+pub fn config_dir() -> PathBuf {
+    if is_root() {
+        return system_data_dir().join("config");
+    }
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(PROGRAM_DIR)
+}
+
 /// Application cache directory.
 pub fn cache_dir() -> PathBuf {
     if is_root() {
