@@ -95,7 +95,24 @@ fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result
         ),
     )?;
 
-    // 2. suppress_prefixlength 0 (priority 100) — lets response packets
+    // 2. fwmark → main table (priority 50) — host-side sockets that are
+    //    intentionally marked must bypass both the TUN default route and
+    //    DNS hijack rules. Relying only on the later "not fwmark" rule is
+    //    not enough for real TCP/UDP sockets with L4 selectors.
+    mgr.apply(
+        format!("ip rule add fwmark {mark_str} table main priority 50"),
+        || {
+            run(
+                "ip",
+                &[
+                    "rule", "add", "fwmark", &mark_str, "table", "main", "priority", "50",
+                ],
+            )
+        },
+        cmd_undo("ip", &["rule", "del", "priority", "50"]),
+    )?;
+
+    // 3. suppress_prefixlength 0 (priority 100) — lets response packets
     //    match specific routes in main table (e.g. eth0 LAN subnet)
     mgr.apply(
         "ip rule add table main suppress_prefixlength 0 priority 100",
@@ -117,7 +134,7 @@ fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result
         cmd_undo("ip", &["rule", "del", "priority", "100"]),
     )?;
 
-    // 3. not fwmark → TUN table (priority 200) — unmarked outbound goes through TUN
+    // 4. not fwmark → TUN table (priority 200) — unmarked outbound goes through TUN
     mgr.apply(
         format!("ip rule add not fwmark {mark_str} table {TUN_TABLE} priority 200"),
         || {
@@ -132,21 +149,24 @@ fn setup_linux(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result
         cmd_undo("ip", &["rule", "del", "priority", "200"]),
     )?;
 
-    // 4. DNS hijack (priority 201) — port 53 always goes through TUN
+    // 5. DNS hijack (priority 201) — unmarked port 53 goes through TUN.
+    //    Marked bootstrap DNS must bypass this rule or it recursively enters
+    //    the TUN path and cannot resolve upstream proxy nodes.
     let _ = mgr.apply(
-        format!("ip rule add dport 53 table {TUN_TABLE} priority 201"),
+        format!("ip rule add not fwmark {mark_str} dport 53 table {TUN_TABLE} priority 201"),
         || {
             run(
                 "ip",
                 &[
-                    "rule", "add", "dport", "53", "table", TUN_TABLE, "priority", "201",
+                    "rule", "add", "not", "fwmark", &mark_str, "dport", "53", "table", TUN_TABLE,
+                    "priority", "201",
                 ],
             )
         },
         cmd_undo("ip", &["rule", "del", "priority", "201"]),
     );
 
-    // 5. Set DNS
+    // 6. Set DNS
     let original_dns = std::fs::read_to_string("/etc/resolv.conf").ok();
     let content = format!("nameserver {}\n", config.dns_ip);
     let _ = mgr.apply(
