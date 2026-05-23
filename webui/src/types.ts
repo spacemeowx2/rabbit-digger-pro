@@ -5,6 +5,9 @@ export interface NetConfig {
   server?: string
   net?: unknown
   sni?: string
+  url?: string
+  interval?: number
+  tolerance?: number
   [key: string]: unknown
 }
 

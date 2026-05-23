@@ -1,7 +1,7 @@
 import { useDeferredValue, useMemo, useState } from 'react'
 
 import { rdpApi } from '../api'
-import type { RdpConfig } from '../types'
+import type { NetConfig, RdpConfig } from '../types'
 import { classNames, getSelectGroups } from '../utils'
 
 const DELAY_TEST_URL = 'http://www.gstatic.com/generate_204'
@@ -46,6 +46,27 @@ function getDelayColor(state?: DelayState): string {
     case 'error':
       return 'text-rose-500'
   }
+}
+
+function getGroupBadge(net: NetConfig): { label: string; className: string } {
+  switch (net.type) {
+    case 'url-test':
+      return { label: 'URL Test', className: 'bg-emerald-50 text-emerald-700' }
+    case 'fallback':
+      return { label: 'Fallback', className: 'bg-amber-50 text-amber-700' }
+    default:
+      return { label: 'Selector', className: 'bg-sky-50 text-sky-600' }
+  }
+}
+
+function getGroupMeta(net: NetConfig): string | null {
+  const facts: string[] = []
+  if (typeof net.url === 'string' && net.url) facts.push(net.url)
+  if (typeof net.interval === 'number') facts.push(`每 ${net.interval}s 检查`)
+  if (typeof net.tolerance === 'number' && net.type === 'url-test') {
+    facts.push(`容差 ${net.tolerance}ms`)
+  }
+  return facts.length > 0 ? facts.join(' · ') : null
 }
 
 export function SelectNetsPage({
@@ -148,6 +169,9 @@ export function SelectNetsPage({
         const selected = net.selected
         const options = net.list ?? []
         const isExpanded = deferredQuery ? true : expandedGroups[groupName] ?? index === 0
+        const badge = getGroupBadge(net)
+        const groupMeta = getGroupMeta(net)
+        const isManualGroup = net.type === 'select'
 
         return (
           <section key={groupName} className="surface overflow-hidden">
@@ -162,10 +186,11 @@ export function SelectNetsPage({
               <h2 className="font-display text-sm font-semibold text-slate-900 truncate">
                 {groupName}
               </h2>
-              <span className="tag bg-sky-50 text-sky-600">Selector</span>
+              <span className={classNames('tag', badge.className)}>{badge.label}</span>
               <span className="text-xs text-slate-500 truncate">
                 {selected ?? '未选择'}
               </span>
+              {groupMeta && <span className="hidden text-xs text-slate-400 xl:block truncate">{groupMeta}</span>}
               <span className="ml-auto text-xs font-medium text-slate-400">{options.length}</span>
               <svg
                 className={classNames(
@@ -194,6 +219,11 @@ export function SelectNetsPage({
                   >
                     {activeDelayScope === groupName ? '测试中...' : '测速本组'}
                   </button>
+                  {!isManualGroup && (
+                    <span className="text-xs text-slate-500">
+                      自动组，当前展示的是运行时选中结果
+                    </span>
+                  )}
                 </div>
 
                 <div className="grid gap-2 grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -202,6 +232,7 @@ export function SelectNetsPage({
                     const isBusy = busyNet === groupName
                     const delayState = delayResults[optionName]
                     const delayLabel = getDelayLabel(delayState)
+                    const canSelect = isManualGroup
 
                     return (
                       <button
@@ -212,10 +243,14 @@ export function SelectNetsPage({
                           isSelected
                             ? 'border-sky-400 bg-sky-600 text-white shadow-sm'
                             : 'border-slate-200 bg-white/60 hover:bg-white hover:border-slate-300',
-                          isBusy && 'cursor-wait opacity-60',
+                          (isBusy || !canSelect) && 'cursor-not-allowed',
+                          isBusy && 'opacity-60',
+                          !canSelect && 'opacity-80',
                         )}
-                        onClick={() => void onSelect(groupName, optionName)}
-                        disabled={isBusy}
+                        onClick={() => {
+                          if (canSelect) void onSelect(groupName, optionName)
+                        }}
+                        disabled={isBusy || !canSelect}
                       >
                         <p className="truncate text-sm font-medium">{optionName}</p>
                         <div className="mt-1 flex items-center justify-between">

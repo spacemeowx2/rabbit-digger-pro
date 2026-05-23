@@ -1,0 +1,25 @@
+id: ui-auto-url-test-demo
+net:
+  local:
+    type: local
+  direct-a:
+    type: alias
+    net: local
+  direct-b:
+    type: alias
+    net: local
+  auto-url-group:
+    type: url-test
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+server:
+  mixed:
+    type: http+socks5
+    bind: 127.0.0.1:11081
+    net: auto-url-group
+    listen: local
