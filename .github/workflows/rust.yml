@@ -42,6 +42,9 @@ jobs:
         with:
           command: test
           args: --all --exclude raw
+      - name: Test Unix TUN packet boundaries
+        if: runner.os != 'Windows'
+        run: cargo test -p raw --locked
       - name: Build release
         uses: actions-rs/cargo@v1
         with:
