@@ -21,6 +21,12 @@ pub struct TunAsyncDevice {
     caps: DeviceCapabilities,
 }
 
+fn packet_framed<T>(mut dev: Framed<T, TunPacketCodec>) -> Framed<T, TunPacketCodec> {
+    // A TUN write is one packet; flush before buffering another packet.
+    dev.set_backpressure_boundary(1);
+    dev
+}
+
 pub fn get_tun(cfg: TunTapSetup) -> Result<TunAsyncDevice> {
     let mut config = Configuration::default();
     let netmask = !0u32 >> (32 - cfg.destination_addr.prefix_len());
@@ -41,7 +47,7 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<TunAsyncDevice> {
 
     let dev = create_as_async(&config).map_err(map_other)?;
     let device_name = dev.tun_name().map_err(map_other)?;
-    let dev = dev.into_framed();
+    let dev = packet_framed(dev.into_framed());
 
     tracing::info!("tun created: {}", device_name);
 
@@ -101,5 +107,58 @@ impl AsyncDevice for TunAsyncDevice {
 impl TunAsyncDevice {
     pub fn name(&self) -> &str {
         &self.device_name
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncWrite;
+
+    struct PacketWriter {
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
+        block_once: bool,
+    }
+
+    impl AsyncWrite for PacketWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if self.block_once {
+                self.block_once = false;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+            self.writes.lock().unwrap().push(buf.to_vec());
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn send_all_keeps_tun_packet_boundaries() {
+        for block_once in [false, true] {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            let writer = PacketWriter {
+                writes: writes.clone(),
+                block_once,
+            };
+            let mut dev = packet_framed(Framed::new(writer, TunPacketCodec::new(1400)));
+            let packets = vec![vec![0x45; 40], vec![0x60; 60]];
+            dev.send_all(&mut futures::stream::iter(packets.iter().cloned().map(Ok)))
+                .await
+                .unwrap();
+            assert_eq!(*writes.lock().unwrap(), packets);
+        }
     }
 }
