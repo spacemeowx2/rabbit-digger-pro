@@ -32,13 +32,21 @@ engine; it reads `?api=host:port` from the page URL and otherwise talks to the
 host that served the page.
 
 Pages: **状态** (status and traffic), **连接** (live connections), **日志**
-(log stream), **节点** (switch a net's node, test node delay), **设置**
-(subscriptions, proxy port, TUN, and engine controls).
+(log stream), **节点** (switch a net's node, test node delay, inspect automatic
+url-test/fallback groups), **设置** (subscriptions, proxy port, TUN, and engine
+controls).
 
 The settings page stores its form in userdata (`daemon/settings`) using the same
 shape as the old React UI, so an existing install keeps its subscriptions. It
 applies the generated config with `config.apply`, and the embedded engine keeps
 its API server alive while the new config starts.
+
+Subscription imports build a manual `proxy` selector whose first entry is the
+subscription's `url-test`/`fallback` group (or a generated `proxy-auto` group
+when the subscription has none). That group health-checks its nodes on first use
+and every interval, so a fresh subscription starts on a working node instead of
+the first entry (often an advertisement node). Individual nodes stay selectable
+from the same `proxy` group.
 
 ## Build for the browser
 

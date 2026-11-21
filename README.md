@@ -20,6 +20,7 @@ All-in-one proxy written in Rust.
 
 * Hot reloading: Apply changes without restart the program.
 * Flexible configuration: proxies can be nested at will, supporting TCP and UDP.
+* Clash-compatible auto groups: `url-test` and `fallback` nets health-check their nodes and switch to a working one.
 * JSON Schema generation: no documentation needed, write configuration directly from code completion.
 
 ### Supported Protocol

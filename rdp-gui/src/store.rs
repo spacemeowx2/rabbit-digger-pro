@@ -3,7 +3,7 @@
 //! Views never talk to the socket: they read this entity and call the small
 //! set of methods below, which send a request and let the reply land here.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use futures::StreamExt;
 use gpui::{Context, Task};
@@ -175,6 +175,7 @@ impl DaemonSettings {
                     }
                 },
                 "select": "proxy",
+                "select_auto": true,
                 "net": "rdp_node_out",
             }));
         } else {
@@ -817,7 +818,11 @@ impl Store {
             return;
         }
         self.delay_scope = Some(scope.to_string());
+        let mut seen = HashSet::new();
         for (net_name, candidate) in targets {
+            if !seen.insert(candidate.clone()) {
+                continue;
+            }
             self.delays.insert(candidate.clone(), DelayState::Testing);
             self.send(
                 "net.delay",
@@ -1125,6 +1130,7 @@ mod tests {
 
         assert_eq!(config["import"][0]["source"]["poll"]["interval"], 900);
         assert_eq!(config["import"][0]["select"], "proxy");
+        assert_eq!(config["import"][0]["select_auto"], true);
         assert_eq!(config["server"]["tun"]["dns_mode"], "fake-ip");
         assert_eq!(config["server"]["tun"]["ip_addr"], "10.0.0.1/24");
         assert_eq!(config["net"]["local"]["mark"], 255);

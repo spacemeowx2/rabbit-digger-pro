@@ -17,6 +17,9 @@ struct NetRow {
     kind: String,
     selected: Option<String>,
     candidates: Vec<String>,
+    auto: bool,
+    interval: Option<u64>,
+    tolerance: Option<u64>,
 }
 
 impl SelectNetsPage {
@@ -35,7 +38,15 @@ fn collect_nets(config: &serde_json::Value) -> Vec<NetRow> {
     };
 
     nets.iter()
-        .map(|(name, value)| {
+        .filter_map(|(name, value)| {
+            let kind = value
+                .get("type")
+                .and_then(|kind| kind.as_str())
+                .unwrap_or("-")
+                .to_string();
+            if !matches!(kind.as_str(), "select" | "url-test" | "fallback") {
+                return None;
+            }
             let selected = value
                 .get("selected")
                 .and_then(|selected| selected.as_str())
@@ -49,18 +60,16 @@ fn collect_nets(config: &serde_json::Value) -> Vec<NetRow> {
                         .collect()
                 })
                 .unwrap_or_default();
-            NetRow {
+            Some(NetRow {
                 name: name.clone(),
-                kind: value
-                    .get("type")
-                    .and_then(|kind| kind.as_str())
-                    .unwrap_or("-")
-                    .to_string(),
+                auto: matches!(kind.as_str(), "url-test" | "fallback"),
+                kind,
                 selected,
                 candidates,
-            }
+                interval: value.get("interval").and_then(|value| value.as_u64()),
+                tolerance: value.get("tolerance").and_then(|value| value.as_u64()),
+            })
         })
-        .filter(|net| net.kind == "select")
         .collect()
 }
 
@@ -129,39 +138,62 @@ impl Render for SelectNetsPage {
                 let active = net.selected.as_deref() == Some(candidate.as_str());
                 let delay = delay_label(delays.get(candidate));
 
-                chips.push(
+                let label = div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(candidate.clone())
+                    .when(delay.is_some(), |el| {
+                        let (label, color) = delay.clone().unwrap();
+                        el.child(div().text_xs().text_color(color).child(label))
+                    });
+
+                let candidate_chip: AnyElement = if net.auto {
+                    // Auto groups pick at runtime; their cards are read-only.
+                    chip(false).cursor_default().child(label).into_any_element()
+                } else {
                     chip(active)
                         .id(("chip", net_index * 1000 + chip_index))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(candidate.clone())
-                                .when(delay.is_some(), |el| {
-                                    let (label, color) = delay.clone().unwrap();
-                                    el.child(div().text_xs().text_color(color).child(label))
-                                }),
-                        )
+                        .child(label)
                         .on_click(cx.listener(move |_this, _event, _window, cx| {
                             store.update(cx, |store, _cx| {
                                 store.select_net(&net_name, &candidate_name);
                             });
                         }))
-                        .into_any_element(),
-                );
-                all_targets.push((net.name.clone(), candidate.clone()));
+                        .into_any_element()
+                };
+                chips.push(candidate_chip);
+                all_targets.push((candidate.clone(), candidate.clone()));
             }
 
             let selected_label = net.selected.clone().unwrap_or_else(|| "未选择".to_string());
             let group_targets: Vec<(String, String)> = net
                 .candidates
                 .iter()
-                .map(|candidate| (net.name.clone(), candidate.clone()))
+                .map(|candidate| (candidate.clone(), candidate.clone()))
                 .collect();
             let test_store = self.store.clone();
             let test_name = net.name.clone();
             let testing_scope = scope.clone();
+            let kind_label = match net.kind.as_str() {
+                "url-test" => "URL 测速",
+                "fallback" => "故障转移",
+                _ => "手动选择",
+            };
+            let meta = if net.auto {
+                let mut facts = Vec::new();
+                if let Some(interval) = net.interval {
+                    facts.push(format!("每 {interval}s 自动检测"));
+                }
+                if net.kind == "url-test" {
+                    if let Some(tolerance) = net.tolerance {
+                        facts.push(format!("容差 {tolerance}ms"));
+                    }
+                }
+                facts.join(" · ")
+            } else {
+                format!("当前：{selected_label}")
+            };
 
             let mut body = div().flex().flex_col().gap_3().child(
                 div()
@@ -174,12 +206,12 @@ impl Render for SelectNetsPage {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(net.name.clone()),
                     )
-                    .child(div().text_xs().text_color(t::muted()).child(net.kind))
+                    .child(div().text_xs().text_color(t::muted()).child(kind_label))
                     .child(
                         div()
                             .text_xs()
-                            .text_color(t::accent())
-                            .child(format!("当前：{selected_label}")),
+                            .text_color(if net.auto { t::ok() } else { t::accent() })
+                            .child(meta),
                     )
                     .child(div().flex_1())
                     .child(
@@ -217,6 +249,14 @@ impl Render for SelectNetsPage {
                 );
             } else {
                 body = body.child(div().flex().flex_row().flex_wrap().gap_2().children(chips));
+                if net.auto {
+                    body = body.child(
+                        div()
+                            .text_xs()
+                            .text_color(t::muted())
+                            .child("自动组会在引擎内测速后切换，不能在这里手动固定。"),
+                    );
+                }
             }
 
             cards.push(card(body).into_any_element());
@@ -264,7 +304,7 @@ impl Render for SelectNetsPage {
                     div()
                         .text_xs()
                         .text_color(t::muted())
-                        .child("点击候选即可切换，切换结果会从引擎推回。"),
+                        .child("手动组点击候选即可切换；URL 测速/故障转移组由引擎自动选择。"),
                 ),
         )
     }
