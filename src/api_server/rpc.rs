@@ -775,12 +775,9 @@ fn install_zip_dir_component(component: &UpdateComponent, bytes: &[u8]) -> Resul
 }
 
 fn ensure_update_path(path: &Path) -> Result<(), ApiError> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let allowed_roots = [
         crate::util::app_dirs::data_dir(),
         crate::util::app_dirs::config_dir(),
-        home.join("homebrew/plugins"),
-        PathBuf::from("/home/deck/homebrew/plugins"),
     ];
     if allowed_roots.iter().any(|root| path.starts_with(root)) {
         return Ok(());
