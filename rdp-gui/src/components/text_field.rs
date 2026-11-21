@@ -23,6 +23,8 @@ pub struct TextField {
     text: String,
     placeholder: SharedString,
     focus: FocusHandle,
+    /// UTF-8 byte range of the IME composition, when one is active.
+    marked: Option<Range<usize>>,
     on_submit: Option<Box<dyn Fn(&str, &mut Window, &mut App) + 'static>>,
 }
 
@@ -37,6 +39,7 @@ impl TextField {
             text: initial.into(),
             placeholder: placeholder.into(),
             focus: cx.focus_handle().tab_stop(true),
+            marked: None,
             on_submit: None,
         }
     }
@@ -55,8 +58,24 @@ impl TextField {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let command = event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+
+        // Native platforms deliver paste as a key event, not through
+        // `EntityInputHandler::paste` (the web does the latter).
+        if command && event.keystroke.key.eq_ignore_ascii_case("v") {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                let text: String = text
+                    .chars()
+                    .map(|ch| if ch == '\n' || ch == '\r' || ch == '\t' { ' ' } else { ch })
+                    .collect();
+                self.replace_text_in_range(None, &text, window, cx);
+            }
+            return;
+        }
+
         match event.keystroke.key.as_str() {
-            "backspace" | "delete" => {
+            "backspace" => {
+                self.marked = None;
                 self.text.pop();
                 window.notify_text_input_changed(&self.focus);
                 cx.notify();
@@ -71,6 +90,14 @@ impl TextField {
             "escape" => window.blur(cx),
             _ => {}
         }
+    }
+
+    fn marked_utf16(&self) -> Option<Range<usize>> {
+        self.marked.as_ref().map(|range| {
+            let start = utf16_len(&self.text[..range.start.min(self.text.len())]);
+            let end = utf16_len(&self.text[..range.end.min(self.text.len())]);
+            start..end
+        })
     }
 }
 
@@ -151,6 +178,36 @@ fn utf16_to_utf8(text: &str, offset: usize) -> usize {
     text.len()
 }
 
+fn utf16_range(text: &str, range: &Range<usize>) -> Range<usize> {
+    let start = range.start.min(text.len());
+    let end = range.end.min(text.len());
+    utf16_len(&text[..start])..utf16_len(&text[..end])
+}
+
+/// Replaces a UTF-16 range with `new_text`. During IME composition the
+/// replacement becomes the new marked range, so the next composition step
+/// replaces it instead of appending to it.
+fn replace_text(
+    text: &mut String,
+    marked: &mut Option<Range<usize>>,
+    range_utf16: Option<Range<usize>>,
+    new_text: &str,
+    keep_marked: bool,
+) {
+    let marked_utf16 = marked.as_ref().map(|range| utf16_range(text, range));
+    let range_utf16 = range_utf16
+        .or(marked_utf16)
+        .unwrap_or_else(|| utf16_len(text)..utf16_len(text));
+    let start = utf16_to_utf8(text, range_utf16.start);
+    let end = utf16_to_utf8(text, range_utf16.end).max(start);
+    text.replace_range(start..end, new_text);
+    *marked = if keep_marked && !new_text.is_empty() {
+        Some(start..start + new_text.len())
+    } else {
+        None
+    };
+}
+
 impl EntityInputHandler for TextField {
     fn text_for_range(
         &mut self,
@@ -185,10 +242,12 @@ impl EntityInputHandler for TextField {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        None
+        self.marked_utf16()
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked = None;
+    }
 
     fn replace_text_in_range(
         &mut self,
@@ -197,11 +256,7 @@ impl EntityInputHandler for TextField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end = utf16_len(&self.text);
-        let range = range_utf16.unwrap_or(end..end);
-        let start = utf16_to_utf8(&self.text, range.start);
-        let end = utf16_to_utf8(&self.text, range.end).max(start);
-        self.text.replace_range(start..end, text);
+        replace_text(&mut self.text, &mut self.marked, range_utf16, text, false);
         window.notify_text_input_changed(&self.focus);
         cx.notify();
     }
@@ -214,7 +269,15 @@ impl EntityInputHandler for TextField {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.replace_text_in_range(range_utf16, new_text, window, cx);
+        replace_text(
+            &mut self.text,
+            &mut self.marked,
+            range_utf16,
+            new_text,
+            true,
+        );
+        window.notify_text_input_changed(&self.focus);
+        cx.notify();
     }
 
     fn bounds_for_range(
@@ -253,5 +316,29 @@ mod tests {
         }
         assert_eq!(utf16_to_utf8(text, 0), 0);
         assert_eq!(utf16_to_utf8(text, usize::MAX), text.len());
+    }
+
+    #[test]
+    fn ime_composition_replaces_its_marked_text() {
+        let mut text = String::from("ab");
+        let mut marked = None;
+
+        // The IME sends the whole composition on each step.
+        replace_text(&mut text, &mut marked, None, "你", true);
+        assert_eq!(text, "ab你");
+        assert_eq!(marked, Some(2..5));
+
+        replace_text(&mut text, &mut marked, None, "你好", true);
+        assert_eq!(text, "ab你好");
+        assert_eq!(marked, Some(2..8));
+
+        // Committing the composition keeps the final text and clears the mark.
+        let range = marked.as_ref().map(|range| utf16_range(&text, range));
+        replace_text(&mut text, &mut marked, range, "你好", false);
+        assert_eq!(text, "ab你好");
+        assert_eq!(marked, None);
+
+        replace_text(&mut text, &mut marked, None, "!", false);
+        assert_eq!(text, "ab你好!");
     }
 }
