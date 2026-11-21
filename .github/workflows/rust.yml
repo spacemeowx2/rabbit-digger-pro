@@ -37,6 +37,12 @@ jobs:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
+      - name: Install GPUI system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libfontconfig-dev
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -58,6 +64,20 @@ jobs:
           file: target/release/${{ matrix.artifact_name }}
           asset_name: ${{ matrix.release_name }}
           tag: ${{ github.ref }}
+
+  web:
+    name: Web target
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Setup toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+      - name: Check the wasm build
+        run: cargo check -p rdp-gui --target wasm32-unknown-unknown
 
   cross_compile:
     name: Cross compile

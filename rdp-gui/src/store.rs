@@ -466,3 +466,76 @@ fn parse_log_line(raw: &str) -> Option<LogLine> {
         message: trimmed.to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_status_reads_state_and_servers() {
+        let status = parse_engine_status(&json!({
+            "status": "Running",
+            "servers": [
+                { "name": "socks5", "server_type": "socks5", "status": "Running" }
+            ]
+        }));
+
+        assert_eq!(status.state, "Running");
+        assert_eq!(status.servers.len(), 1);
+        assert_eq!(status.servers[0].0, "socks5");
+        assert_eq!(status.servers[0].2, "Running");
+    }
+
+    #[test]
+    fn engine_status_keeps_unknown_shape_readable() {
+        let status = parse_engine_status(&json!({ "status": { "kind": "Idle" } }));
+        assert!(status.state.contains("Idle"));
+        assert!(status.servers.is_empty());
+    }
+
+    #[test]
+    fn log_values_carry_level_time_and_message() {
+        let line = parse_log_value(&json!({
+            "timestamp": "2026-11-22T01:02:03.000Z",
+            "level": "INFO",
+            "fields": { "message": "engine started" }
+        }))
+        .expect("a log object parses");
+
+        assert_eq!(line.level, "INFO");
+        assert_eq!(line.time, "2026-11-22T01:02:03.000Z");
+        assert_eq!(line.message, "engine started");
+    }
+
+    #[test]
+    fn log_lines_accept_json_and_plain_text() {
+        let structured = parse_log_line(r#"{"level":"ERROR","fields":{"message":"boom"}}"#)
+            .expect("json line parses");
+        assert_eq!(structured.level, "ERROR");
+        assert_eq!(structured.message, "boom");
+
+        let plain = parse_log_line("a bare trailing line").expect("plain line parses");
+        assert_eq!(plain.level, "LOG");
+        assert_eq!(plain.message, "a bare trailing line");
+
+        assert!(parse_log_line("   ").is_none());
+    }
+
+    #[test]
+    fn log_queue_is_capped() {
+        let mut logs = VecDeque::new();
+        for index in 0..(MAX_LOGS + 10) {
+            push_log(
+                &mut logs,
+                LogLine {
+                    level: "LOG".to_string(),
+                    time: String::new(),
+                    message: index.to_string(),
+                },
+            );
+        }
+
+        assert_eq!(logs.len(), MAX_LOGS);
+        assert_eq!(logs.front().unwrap().message, "10");
+    }
+}
