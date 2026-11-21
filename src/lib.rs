@@ -67,10 +67,15 @@ impl App {
 
         Ok(Self { rd, cfg_mgr })
     }
-    pub async fn run_api_server(&self, config: ApiServerConfig) -> Result<()> {
+    /// Starts the API server and returns the address it actually bound, which
+    /// differs from the configured one when the port is 0.
+    pub async fn run_api_server(
+        &self,
+        config: ApiServerConfig,
+    ) -> Result<Option<std::net::SocketAddr>> {
         #[cfg(feature = "api_server")]
         if let Some(bind) = config.bind {
-            api_server::ApiServer {
+            let addr = api_server::ApiServer {
                 rabbit_digger: self.rd.clone(),
                 config_manager: self.cfg_mgr.clone(),
                 access_token: config.access_token,
@@ -81,8 +86,9 @@ impl App {
             .run(&bind)
             .await
             .context("Failed to run api server.")?;
+            return Ok(Some(addr));
         }
-        Ok(())
+        Ok(None)
     }
 }
 

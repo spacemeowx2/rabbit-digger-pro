@@ -53,10 +53,13 @@ The desktop and browser UI lives in `rdp-gui`, built with
 [GPUI](https://crates.io/crates/gpui-ce). One set of views serves both targets;
 only the JSON-RPC transport is target-specific.
 
+The native window starts the engine in-process, so it is a single binary. Point
+it at a config file, or attach it to a daemon that is already running:
+
 ```sh
-cargo run -- --config config.yaml --bind 127.0.0.1:9091   # engine
-cargo run -p rdp-gui                                      # native window
-cd rdp-gui && trunk serve                                 # browser build
+cargo run -p rdp-gui -- --config config.yaml
+cargo run -p rdp-gui -- --api 127.0.0.1:9091
+cd rdp-gui && trunk serve                     # browser build
 ```
 
 See [rdp-gui/README.md](rdp-gui/README.md) for the web build and its limits.

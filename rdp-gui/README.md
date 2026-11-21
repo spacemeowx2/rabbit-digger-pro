@@ -8,26 +8,37 @@ One set of views drives both targets. Only the socket differs: `api/native.rs`
 uses tokio-tungstenite, `api/web.rs` uses `web_sys::WebSocket`, and both hand
 the same events to the `Store` entity in `store.rs`.
 
-## Talk to the daemon
+## Talk to the engine
 
-The UI is a client of the JSON-RPC API served by `rabbit-digger-pro --bind`.
-Nothing is shared in-process, so the same binary can drive a local or a remote
-engine.
+The native binary runs the engine in its own process, so one window is the whole
+application:
 
 ```sh
-# terminal 1: the engine
-cargo run -- --config config.yaml --bind 127.0.0.1:9091
-
-# terminal 2: the window
-cargo run -p rdp-gui
+cargo run -p rdp-gui -- --config config.yaml
 ```
 
-The endpoint defaults to `127.0.0.1:9091`; override it with `RD_API`
-(`RD_API=192.168.1.10:9091 cargo run -p rdp-gui`).
+`--config` (or `RD_CONFIG`) picks the config file the embedded engine loads. Its
+API server binds an ephemeral loopback port; the window talks to it over the same
+JSON-RPC it would use against a remote daemon.
+
+To attach to an engine that is already running instead:
+
+```sh
+cargo run -p rdp-gui -- --api 127.0.0.1:9091
+```
+
+`--api` (or `RD_API`) wins over `--config`. The browser build has no embedded
+engine; it reads `?api=host:port` from the page URL and otherwise talks to the
+host that served the page.
 
 Pages: **状态** (status and traffic), **连接** (live connections), **日志**
-(log stream), **节点** (switch a net's node), **设置** (engine controls and the
-current config).
+(log stream), **节点** (switch a net's node, test node delay), **设置**
+(subscriptions, proxy port, TUN, and engine controls).
+
+The settings page stores its form in userdata (`daemon/settings`) using the same
+shape as the old React UI, so an existing install keeps its subscriptions. It
+applies the generated config with `config.apply`, and the embedded engine keeps
+its API server alive while the new config starts.
 
 ## Build for the browser
 
