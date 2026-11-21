@@ -158,6 +158,11 @@ mod tests {
     fn embedded_engine_survives_a_config_reload() {
         let dir = std::env::temp_dir().join(format!("rdp-gui-engine-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create the temp config dir");
+        // Keep app state (userdata, select cache, side effects) in the temp
+        // directory instead of the developer's real profile.
+        std::env::set_var("RDP_DATA_DIR", dir.join("data"));
+        std::env::set_var("RDP_CONFIG_DIR", dir.join("config"));
+        std::env::set_var("RDP_CACHE_DIR", dir.join("cache"));
         let config = dir.join("config.yaml");
         std::fs::write(
             &config,
