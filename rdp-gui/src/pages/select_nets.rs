@@ -2,12 +2,14 @@ use gpui::{
     div, prelude::*, px, AnyElement, Context, Entity, FontWeight, IntoElement, Render, Window,
 };
 
-use crate::pages::{card, page_shell};
-use crate::store::Store;
+use crate::components::text_field::TextField;
+use crate::pages::{action, card, chip, page_shell};
+use crate::store::{DelayState, Store};
 use crate::theme as t;
 
 pub struct SelectNetsPage {
     store: Entity<Store>,
+    search_input: Entity<TextField>,
 }
 
 struct NetRow {
@@ -18,8 +20,12 @@ struct NetRow {
 }
 
 impl SelectNetsPage {
-    pub fn new(store: Entity<Store>, _cx: &mut Context<Self>) -> Self {
-        Self { store }
+    pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        let search_input = cx.new(|cx| TextField::new("搜索节点…", "", cx));
+        Self {
+            store,
+            search_input,
+        }
     }
 }
 
@@ -54,19 +60,66 @@ fn collect_nets(config: &serde_json::Value) -> Vec<NetRow> {
                 candidates,
             }
         })
+        .filter(|net| net.kind == "select")
         .collect()
+}
+
+fn delay_label(state: Option<&DelayState>) -> Option<(String, gpui::Rgba)> {
+    match state {
+        None => None,
+        Some(DelayState::Testing) => Some(("测速中…".to_string(), t::muted())),
+        Some(DelayState::Done { response, .. }) => {
+            let color = if *response <= 200 {
+                t::ok()
+            } else if *response <= 500 {
+                t::warn()
+            } else {
+                t::danger()
+            };
+            Some((format!("{response}ms"), color))
+        }
+        Some(DelayState::Timeout) => Some(("超时".to_string(), t::danger())),
+        Some(DelayState::Error) => Some(("错误".to_string(), t::danger())),
+    }
 }
 
 impl Render for SelectNetsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let nets = match self.store.read(cx).config.as_ref() {
+        let query = self.search_input.read(cx).text().trim().to_lowercase();
+        let (config, delays, scope) = {
+            let store = self.store.read(cx);
+            (
+                store.config.clone(),
+                store.delays.clone(),
+                store.delay_scope.clone(),
+            )
+        };
+        let mut nets = match config.as_ref() {
             Some(config) => collect_nets(config),
             None => Vec::new(),
         };
+        if !query.is_empty() {
+            nets = nets
+                .into_iter()
+                .filter_map(|mut net| {
+                    if net.name.to_lowercase().contains(&query) {
+                        return Some(net);
+                    }
+                    net.candidates
+                        .retain(|candidate| candidate.to_lowercase().contains(&query));
+                    if net.candidates.is_empty() {
+                        None
+                    } else {
+                        Some(net)
+                    }
+                })
+                .collect();
+        }
 
         // Build the cards eagerly: `cx.listener` borrows the context, which a
         // nested `map` closure cannot hold while it iterates.
         let mut cards: Vec<AnyElement> = Vec::with_capacity(nets.len());
+        let mut all_targets: Vec<(String, String)> = Vec::new();
         for (net_index, net) in nets.into_iter().enumerate() {
             let mut chips: Vec<AnyElement> = Vec::with_capacity(net.candidates.len());
             for (chip_index, candidate) in net.candidates.iter().enumerate() {
@@ -74,19 +127,22 @@ impl Render for SelectNetsPage {
                 let net_name = net.name.clone();
                 let candidate_name = candidate.clone();
                 let active = net.selected.as_deref() == Some(candidate.as_str());
+                let delay = delay_label(delays.get(candidate));
 
                 chips.push(
-                    div()
-                        .id(("chip", net_index * 100 + chip_index))
-                        .px_3()
-                        .py_1()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(if active { t::accent() } else { t::border() })
-                        .when(active, |el| el.bg(t::accent_soft()).text_color(t::accent()))
-                        .when(!active, |el| el.text_color(t::muted()))
-                        .cursor_pointer()
-                        .child(candidate.clone())
+                    chip(active)
+                        .id(("chip", net_index * 1000 + chip_index))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(candidate.clone())
+                                .when(delay.is_some(), |el| {
+                                    let (label, color) = delay.clone().unwrap();
+                                    el.child(div().text_xs().text_color(color).child(label))
+                                }),
+                        )
                         .on_click(cx.listener(move |_this, _event, _window, cx| {
                             store.update(cx, |store, _cx| {
                                 store.select_net(&net_name, &candidate_name);
@@ -94,36 +150,63 @@ impl Render for SelectNetsPage {
                         }))
                         .into_any_element(),
                 );
+                all_targets.push((net.name.clone(), candidate.clone()));
             }
 
-            let selected_label = net
-                .selected
-                .clone()
-                .unwrap_or_else(|| "未选择".to_string());
+            let selected_label = net.selected.clone().unwrap_or_else(|| "未选择".to_string());
+            let group_targets: Vec<(String, String)> = net
+                .candidates
+                .iter()
+                .map(|candidate| (net.name.clone(), candidate.clone()))
+                .collect();
+            let test_store = self.store.clone();
+            let test_name = net.name.clone();
+            let testing_scope = scope.clone();
 
-            let mut body = div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(net.name.clone()),
-                        )
-                        .child(div().text_xs().text_color(t::muted()).child(net.kind))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(t::accent())
-                                .child(format!("当前：{selected_label}")),
-                        ),
-                );
+            let mut body = div().flex().flex_col().gap_3().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(net.name.clone()),
+                    )
+                    .child(div().text_xs().text_color(t::muted()).child(net.kind))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t::accent())
+                            .child(format!("当前：{selected_label}")),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t::muted())
+                            .child(format!("{} 个候选", net.candidates.len())),
+                    )
+                    .child(
+                        action()
+                            .id(("test-group", net_index))
+                            .when(testing_scope.is_some(), |el| el.opacity(0.5))
+                            .child(if testing_scope.as_deref() == Some(test_name.as_str()) {
+                                "测速中…"
+                            } else {
+                                "测速本组"
+                            })
+                            .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                let targets = group_targets.clone();
+                                let scope = test_name.clone();
+                                test_store.update(cx, |store, cx| {
+                                    store.test_delays(&scope, targets);
+                                    cx.notify();
+                                });
+                            })),
+                    ),
+            );
 
             if chips.is_empty() {
                 body = body.child(
@@ -139,15 +222,50 @@ impl Render for SelectNetsPage {
             cards.push(card(body).into_any_element());
         }
 
+        let test_store = self.store.clone();
+        let testing = scope.is_some();
         page_shell(
             "节点",
             "可切换的 net 与候选节点",
-            div().flex().flex_col().gap_3().children(cards).child(
-                div()
-                    .text_xs()
-                    .text_color(t::muted())
-                    .child("点击候选即可切换，切换结果会从引擎推回。"),
-            ),
+            div()
+                .id("nets-scroll")
+                .size_full()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(div().w(px(300.)).child(self.search_input.clone()))
+                        .child(
+                            action()
+                                .id("test-all")
+                                .when(testing, |el| el.opacity(0.5))
+                                .child(if testing {
+                                    "测速中…"
+                                } else {
+                                    "测速全部"
+                                })
+                                .on_click(cx.listener(move |_this, _event, _window, cx| {
+                                    let targets = all_targets.clone();
+                                    test_store.update(cx, |store, cx| {
+                                        store.test_delays("全部", targets);
+                                        cx.notify();
+                                    });
+                                })),
+                        ),
+                )
+                .children(cards)
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(t::muted())
+                        .child("点击候选即可切换，切换结果会从引擎推回。"),
+                ),
         )
     }
 }

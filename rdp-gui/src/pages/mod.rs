@@ -4,7 +4,7 @@ pub mod select_nets;
 pub mod settings;
 pub mod status;
 
-use gpui::{div, prelude::*, px, FontWeight, IntoElement, ParentElement, Styled};
+use gpui::{div, prelude::*, FontWeight, IntoElement, ParentElement, Styled};
 
 use crate::theme as t;
 
@@ -47,15 +47,28 @@ pub fn card(body: impl IntoElement) -> impl IntoElement {
         .child(body)
 }
 
-/// Placeholder shown until a page has live data.
-pub fn placeholder(text: &'static str) -> impl IntoElement {
+/// Plain outlined button; attach `id` and `on_click` at the call site.
+pub fn action() -> gpui::Div {
     div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(160.))
-        .text_color(t::muted())
-        .child(text)
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .border_1()
+        .border_color(t::border())
+        .cursor_pointer()
+}
+
+/// Selectable pill used by the settings toggles and node candidates.
+pub fn chip(active: bool) -> gpui::Div {
+    div()
+        .px_3()
+        .py_1()
+        .rounded_full()
+        .border_1()
+        .border_color(if active { t::accent() } else { t::border() })
+        .when(active, |el| el.bg(t::accent_soft()).text_color(t::accent()))
+        .when(!active, |el| el.text_color(t::muted()))
+        .cursor_pointer()
 }
 
 /// One headline number with its label.
