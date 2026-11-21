@@ -7,7 +7,13 @@ description = "Native and web GUI for rabbit-digger-pro, built with GPUI"
 
 [dependencies]
 gpui = { package = "gpui-ce", version = "0.3" }
-gpui_platform = { package = "gpui_ce_platform", version = "0.3" }
+# `multithreaded` is off by default here: it needs a nightly `build-std`
+# WebAssembly toolchain. A single-threaded wasm build runs on stable.
+gpui_platform = { package = "gpui_ce_platform", version = "0.3", default-features = false, features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

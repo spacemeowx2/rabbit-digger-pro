@@ -1,0 +1,4 @@
+Characters the embedded UI font covers.
+Regenerate with scripts/build-font-subset.py after changing UI text.
+
+ !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~·–—…⇄≡▸◇◉●⚙、。「」【】上下与个从代会作候停全击切到制前协即取可回失实尚已开引当得志态择换接控推操擎数断新日时曲最有未条果标止没活流清点状率理用的目空端累线结置节行计议设话读调败跃运近这连选速部配重量！（），：？

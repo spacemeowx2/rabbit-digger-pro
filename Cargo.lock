@@ -3239,7 +3239,6 @@ dependencies = [
  "futures",
  "parking_lot",
  "rand 0.9.5",
- "wasm_thread",
  "web-time",
 ]
 
@@ -3298,7 +3297,6 @@ dependencies = [
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm_thread",
  "web-sys",
  "web-time",
 ]
@@ -9423,18 +9421,6 @@ dependencies = [
  "indexmap 2.13.0",
  "wasm-encoder",
  "wasmparser",
-]
-
-[[package]]
-name = "wasm_thread"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7516db7f32decdadb1c3b8deb1b7d78b9df7606c5cc2f6241737c2ab3a0258e"
-dependencies = [
- "futures",
- "js-sys",
- "wasm-bindgen",
- "web-sys",
 ]
 
 [[package]]

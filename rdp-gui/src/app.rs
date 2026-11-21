@@ -35,16 +35,6 @@ impl Page {
             Page::Settings => "设置",
         }
     }
-
-    fn glyph(self) -> &'static str {
-        match self {
-            Page::Status => "◉",
-            Page::Connections => "⇄",
-            Page::Logs => "≡",
-            Page::SelectNets => "◇",
-            Page::Settings => "⚙",
-        }
-    }
 }
 
 pub struct Root {
@@ -125,7 +115,6 @@ impl Root {
                     .cursor_pointer()
                     .when(active, |el| el.bg(t::accent_soft()).text_color(t::accent()))
                     .when(!active, |el| el.text_color(t::muted()))
-                    .child(div().w(px(16.)).child(page.glyph()))
                     .child(div().child(page.label()))
                     .on_click(cx.listener(move |this, _event, _window, cx| {
                         if this.page != page {
@@ -161,7 +150,7 @@ impl Render for Root {
         let body = self.content();
         let sidebar = self.sidebar(cx);
 
-        div()
+        let root = div()
             .size_full()
             .flex()
             .flex_row()
@@ -169,6 +158,13 @@ impl Render for Root {
             .text_color(t::text())
             .text_sm()
             .child(sidebar)
-            .child(div().flex_1().h_full().overflow_hidden().child(body))
+            .child(div().flex_1().h_full().overflow_hidden().child(body));
+
+        // The browser has no system fonts, so the wasm build names the face it
+        // registered at startup instead of letting GPUI pick its default.
+        #[cfg(target_family = "wasm")]
+        let root = root.font_family(crate::UI_FAMILY);
+
+        root
     }
 }

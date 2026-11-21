@@ -47,6 +47,20 @@ By default it also runs `16` concurrent proxied fetches and one rate-limited `2 
 For a longer soak, for example, run `STRESS_CONCURRENCY=32 LONG_TRANSFER_KIB=8192 LONG_RATE_LIMIT=128k bash scripts/vless_xray_reality_e2e.sh`.
 For GitHub Actions, use the manual workflow [vless-xray-interop.yml](/Users/space/project/rabbit-digger-pro/.github/workflows/vless-xray-interop.yml) on macOS to run the same real-binary checks.
 
+## GUI
+
+The desktop and browser UI lives in `rdp-gui`, built with
+[GPUI](https://crates.io/crates/gpui-ce). One set of views serves both targets;
+only the JSON-RPC transport is target-specific.
+
+```sh
+cargo run -- --config config.yaml --bind 127.0.0.1:9091   # engine
+cargo run -p rdp-gui                                      # native window
+cd rdp-gui && trunk serve                                 # browser build
+```
+
+See [rdp-gui/README.md](rdp-gui/README.md) for the web build and its limits.
+
 ## crates
 
 * rd-derive
