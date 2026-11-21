@@ -38,7 +38,7 @@ pub async fn run_daemon(bind: String, access_token: Option<String>) -> Result<()
     .await
     .context("Failed to start API server")?;
 
-    tracing::info!("Daemon started, WebUI available at http://{}", bind);
+    tracing::info!("Daemon started, API available at http://{}", bind);
 
     // Restore last config if available
     let userdata = FileStorage::new(FolderType::Data, "userdata").await?;
@@ -53,7 +53,7 @@ pub async fn run_daemon(bind: String, access_token: Option<String>) -> Result<()
             }
         }
     } else {
-        tracing::info!("No saved configuration, waiting for WebUI...");
+        tracing::info!("No saved configuration, waiting for a config import...");
     }
 
     // Convert channel receiver into a stream for config_stream_from_sources

@@ -75,7 +75,7 @@ async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
 
     println!("Service installed and started.");
     println!("  Name: {SERVICE_NAME}");
-    println!("  WebUI: http://{bind}");
+    println!("  API: http://{bind}");
     Ok(())
 }
 

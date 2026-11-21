@@ -1,2 +1,2 @@
 #!/bin/bash
-cargo run --features libpcap,webui_embed -- service run "$@"
+cargo run --features libpcap -- service run "$@"

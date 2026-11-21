@@ -7,8 +7,6 @@ use tokio::sync::mpsc;
 
 use crate::config::{ConfigManager, ImportSource};
 
-#[cfg(feature = "webui_embed")]
-mod embedded_webui;
 mod routes;
 mod rpc;
 mod shared;

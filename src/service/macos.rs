@@ -130,7 +130,7 @@ async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
     println!("  Binary: {}", dest.display());
     println!("  Plist:  {}", plist.display());
     println!("  Logs:   /var/log/rabbit_digger_pro/");
-    println!("  WebUI:  http://{}", bind);
+    println!("  API:  http://{}", bind);
     Ok(())
 }
 

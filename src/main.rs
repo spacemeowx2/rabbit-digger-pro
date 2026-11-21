@@ -24,7 +24,8 @@ struct ApiServerArgs {
     #[structopt(long, env = "RD_ACCESS_TOKEN")]
     access_token: Option<String>,
 
-    /// Web UI. Folder path.
+    /// Serve a static web frontend from this directory (e.g. the wasm build
+    /// of `rdp-gui`, produced by `trunk build`).
     #[structopt(long, env = "RD_WEB_UI")]
     web_ui: Option<String>,
 }
