@@ -150,6 +150,7 @@ members = [
     "protocol/vless",
     "protocol/anytls",
     "ffi",
+    "rdp-gui",
 ]
 
 [profile.release]
