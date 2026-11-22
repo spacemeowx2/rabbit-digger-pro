@@ -392,6 +392,8 @@ impl Store {
             BackendEvent::Closed(reason) => {
                 self.connected = false;
                 self.conn = None;
+                // Replies for in-flight requests will never arrive.
+                self.pending.clear();
                 if self.engine.state != "Stopped" {
                     self.error = Some(format!("与引擎的连接已断开：{reason}"));
                 }
@@ -717,7 +719,6 @@ impl Store {
     fn send(&mut self, method: &str, params: Value, kind: Pending) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.pending.insert(id, kind);
         let payload = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -725,6 +726,7 @@ impl Store {
             "params": params,
         });
         if let Some(conn) = &self.conn {
+            self.pending.insert(id, kind);
             conn.send(payload.to_string());
         }
         id
