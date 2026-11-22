@@ -286,6 +286,21 @@ impl From<Arc<dyn INet>> for Net {
 }
 
 impl Net {
+    /// Returns the net wrapped by a `RunningNet`-style proxy, if any.
+    pub fn get_inner(&self) -> Option<Net> {
+        self.0.get_inner()
+    }
+
+    /// Downcasts the concrete net implementation. Returns `None` when `self`
+    /// wraps a different implementation.
+    pub fn downcast<T: INet + 'static>(&self) -> Option<std::sync::Arc<T>> {
+        self.0
+            .clone()
+            .into_any_arc()
+            .downcast::<T>()
+            .ok()
+    }
+
     #[inline(always)]
     pub fn provide_tcp_connect(&self) -> Option<&dyn TcpConnect> {
         self.0.provide_tcp_connect()

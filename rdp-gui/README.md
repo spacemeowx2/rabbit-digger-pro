@@ -41,12 +41,14 @@ shape as the old React UI, so an existing install keeps its subscriptions. It
 applies the generated config with `config.apply`, and the embedded engine keeps
 its API server alive while the new config starts.
 
-Subscription imports build a manual `proxy` selector whose first entry is the
-subscription's `url-test`/`fallback` group (or a generated `proxy-auto` group
-when the subscription has none). That group health-checks its nodes on first use
-and every interval, so a fresh subscription starts on a working node instead of
-the first entry (often an advertisement node). Individual nodes stay selectable
-from the same `proxy` group.
+Subscription imports keep the Clash groups and rules. The mixed listener runs
+the imported `rule` net, so the subscription's own `MATCH` target (usually a
+selector whose first entry is its `url-test` group) decides the default route,
+exactly like Clash. That group health-checks its nodes on first use and every
+interval, so a fresh subscription starts on a working node instead of the
+first entry (often an advertisement node). Manual selections are stored per
+group, and the node page shows the runtime member of each auto group through
+the `net.status` RPC.
 
 ## Build for the browser
 

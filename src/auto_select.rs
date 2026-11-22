@@ -1,4 +1,4 @@
-﻿use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use rd_interface::{registry::NetRef, Context, Error, IntoAddress, Net};
 use reqwest::Url;
 use tokio::{
@@ -35,6 +35,7 @@ struct AutoSelectState {
 pub(crate) struct AutoSelectCore {
     mode: AutoSelectMode,
     list: Vec<Net>,
+    names: Vec<String>,
     test_url: Url,
     interval: Duration,
     tolerance: u64,
@@ -62,6 +63,16 @@ impl AutoSelectCore {
             .iter()
             .position(|item| item.represent() == selected.represent())
             .unwrap_or(0);
+        let names = list
+            .iter()
+            .map(|item| {
+                let represent = item.represent();
+                represent
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| represent.to_string())
+            })
+            .collect();
         let nets = list.into_iter().map(|item| item.value_cloned()).collect();
         let test_url = Url::parse(&url)
             .map_err(|err| Error::other(format!("invalid auto-select url {url}: {err}")))?;
@@ -69,6 +80,7 @@ impl AutoSelectCore {
         Ok(Self {
             mode,
             list: nets,
+            names,
             test_url,
             interval: Duration::from_secs(interval),
             tolerance,
@@ -117,6 +129,17 @@ impl AutoSelectCore {
 
     pub(crate) async fn current_net(&self) -> rd_interface::Result<Net> {
         Ok(self.list[self.current_index().await?].clone())
+    }
+
+    /// Index and display name of the net traffic currently goes through.
+    pub(crate) async fn current_selection(&self) -> rd_interface::Result<(usize, String)> {
+        let index = self.current_index().await?;
+        let name = self
+            .names
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| format!("#{index}"));
+        Ok((index, name))
     }
 
     pub(crate) async fn on_operation_success(&self) {

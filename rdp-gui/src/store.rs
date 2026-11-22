@@ -164,8 +164,11 @@ impl DaemonSettings {
         }
         net.insert("rdp_node_out".to_string(), node_out);
 
+        let active = self.active_subscription();
+        let outbound = if active.is_some() { "rule" } else { "proxy" };
+
         let mut imports = Vec::new();
-        if let Some(subscription) = self.active_subscription() {
+        if let Some(subscription) = active {
             imports.push(json!({
                 "type": "clash",
                 "source": {
@@ -174,8 +177,7 @@ impl DaemonSettings {
                         "interval": subscription.interval.saturating_mul(60),
                     }
                 },
-                "select": "proxy",
-                "select_auto": true,
+                "rule_name": "rule",
                 "net": "rdp_node_out",
             }));
         } else {
@@ -191,7 +193,7 @@ impl DaemonSettings {
                 "resolve".to_string(),
                 json!({
                     "type": "resolve",
-                    "net": "proxy",
+                    "net": outbound,
                     "resolve_net": "local",
                     "ipv6": false,
                 }),
@@ -218,7 +220,7 @@ impl DaemonSettings {
             json!({
                 "type": "http+socks5",
                 "bind": format!("127.0.0.1:{}", self.port),
-                "net": "proxy",
+                "net": outbound,
                 "listen": "local",
             }),
         );
@@ -237,6 +239,11 @@ impl DaemonSettings {
 pub struct Notice {
     pub ok: bool,
     pub text: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AutoNodeStatus {
+    pub selected: String,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +267,7 @@ enum Pending {
     SettingsPut { apply: bool },
     ApplyConfig,
     NetDelay(String),
+    NetStatus(String),
     Other,
 }
 
@@ -285,6 +293,8 @@ pub struct Store {
     pub tun_ip_suggestion: Option<String>,
     /// Delay results of the node page, keyed by candidate name.
     pub delays: HashMap<String, DelayState>,
+    /// Runtime selections of url-test/fallback groups, keyed by net name.
+    pub auto_selected: HashMap<String, AutoNodeStatus>,
     /// Label of the running delay test, `None` when idle.
     pub delay_scope: Option<String>,
     delay_pending: usize,
@@ -295,6 +305,7 @@ pub struct Store {
     last_totals: Option<(u64, u64)>,
     pump: Option<Task<()>>,
     retry: Option<Task<()>>,
+    status_timer: Option<Task<()>>,
 }
 
 impl Store {
@@ -321,6 +332,7 @@ impl Store {
             settings_notice: None,
             tun_ip_suggestion: None,
             delays: HashMap::new(),
+            auto_selected: HashMap::new(),
             delay_scope: None,
             delay_pending: 0,
             conn: None,
@@ -329,8 +341,23 @@ impl Store {
             last_totals: None,
             pump: None,
             retry: None,
+            status_timer: None,
         };
         store.connect(cx);
+        store.status_timer = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(30))
+                .await;
+            let keep_going = this
+                .update(cx, |store, cx| {
+                    store.request_auto_statuses();
+                    cx.notify();
+                })
+                .is_ok();
+            if !keep_going {
+                break;
+            }
+        }));
         store
     }
 
@@ -450,6 +477,10 @@ impl Store {
                 Pending::NetDelay(candidate) => {
                     self.finish_delay(&candidate, DelayState::Error);
                 }
+                Pending::NetStatus(name) => {
+                    // A stopped or non-auto net has no status; that is normal.
+                    self.auto_selected.remove(&name);
+                }
                 _ => self.error = Some(message),
             }
             cx.notify();
@@ -460,6 +491,7 @@ impl Store {
         match kind {
             Pending::Config => {
                 self.config = if result.is_null() { None } else { Some(result) };
+                self.request_auto_statuses();
                 cx.notify();
             }
             Pending::LogsTail => {
@@ -530,6 +562,24 @@ impl Store {
                     }
                 };
                 self.finish_delay(&candidate, state);
+                cx.notify();
+            }
+            Pending::NetStatus(name) => {
+                let kind = result.get("type").and_then(Value::as_str);
+                if matches!(kind, Some("url-test") | Some("fallback")) {
+                    self.auto_selected.insert(
+                        name,
+                        AutoNodeStatus {
+                            selected: result
+                                .get("selected")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    );
+                } else {
+                    self.auto_selected.remove(&name);
+                }
                 cx.notify();
             }
             Pending::Other => {}
@@ -682,6 +732,38 @@ impl Store {
 
     pub fn request_config(&mut self) {
         self.send("config.get", json!({}), Pending::Config);
+    }
+
+    /// Asks each url-test/fallback group for the node traffic currently goes
+    /// through. The call also refreshes the group if its interval elapsed.
+    fn request_auto_statuses(&mut self) {
+        let names: Vec<String> = self
+            .config
+            .as_ref()
+            .and_then(|config| config.get("net"))
+            .and_then(Value::as_object)
+            .map(|nets| {
+                nets.iter()
+                    .filter(|(_, net)| {
+                        matches!(
+                            net.get("type").and_then(Value::as_str),
+                            Some("url-test") | Some("fallback")
+                        )
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        self.auto_selected
+            .retain(|name, _| names.iter().any(|current| current == name));
+        for name in names {
+            self.send(
+                "net.status",
+                json!({ "net_name": name }),
+                Pending::NetStatus(name),
+            );
+        }
     }
 
     pub fn request_logs(&mut self, tail: u64) {
@@ -1109,6 +1191,7 @@ mod tests {
         assert_eq!(config["net"]["proxy"]["type"], "alias");
         assert_eq!(config["net"]["proxy"]["net"], "local");
         assert_eq!(config["server"]["mixed"]["bind"], "127.0.0.1:10800");
+        assert_eq!(config["server"]["mixed"]["net"], "proxy");
         assert!(config["import"].as_array().unwrap().is_empty());
         assert!(config["server"].get("tun").is_none());
     }
@@ -1129,8 +1212,10 @@ mod tests {
         let config: Value = serde_json::from_str(&settings.to_config_text()).unwrap();
 
         assert_eq!(config["import"][0]["source"]["poll"]["interval"], 900);
-        assert_eq!(config["import"][0]["select"], "proxy");
-        assert_eq!(config["import"][0]["select_auto"], true);
+        assert_eq!(config["import"][0]["rule_name"], "rule");
+        assert!(config["import"][0].get("select").is_none());
+        assert_eq!(config["server"]["mixed"]["net"], "rule");
+        assert_eq!(config["net"]["resolve"]["net"], "rule");
         assert_eq!(config["server"]["tun"]["dns_mode"], "fake-ip");
         assert_eq!(config["server"]["tun"]["ip_addr"], "10.0.0.1/24");
         assert_eq!(config["net"]["local"]["mark"], 255);

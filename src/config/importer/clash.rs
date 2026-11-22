@@ -40,12 +40,6 @@ pub struct Clash {
     #[serde(default)]
     select: Option<String>,
 
-    /// Put a url-test group over all proxies at the front of `select` and make
-    /// it the default, so a fresh subscription starts on a reachable node
-    /// instead of the first entry (which is often an advertisement node).
-    #[serde(default)]
-    select_auto: bool,
-
     // reverse map from clash name to net name
     #[serde(skip)]
     name_map: BTreeMap<String, String>,
@@ -588,7 +582,8 @@ impl Importer for Clash {
     ) -> Result<()> {
         let clash_config: ClashConfig = serde_yaml::from_str(content)?;
         let mut added_proxies = Vec::new();
-        let mut auto_groups = Vec::new();
+        let mut first_select: Option<String> = None;
+        let mut first_auto: Option<String> = None;
         let mut proxy_map = HashMap::new();
 
         for p in clash_config.proxies {
@@ -624,8 +619,14 @@ impl Importer for Clash {
                 let name = self.proxy_group_name(&old_name);
                 match self.proxy_group_to_net(pg, &proxy_map) {
                     Ok(pg) => {
-                        if pg.net_type == "url-test" || pg.net_type == "fallback" {
-                            auto_groups.push(name.clone());
+                        match pg.net_type.as_str() {
+                            "select" if first_select.is_none() => {
+                                first_select = Some(name.clone());
+                            }
+                            "url-test" | "fallback" if first_auto.is_none() => {
+                                first_auto = Some(name.clone());
+                            }
+                            _ => {}
                         }
                         config.net.insert(name, pg);
                     }
@@ -638,7 +639,7 @@ impl Importer for Clash {
 
         if let Some(rule_name) = &self.rule_name {
             let oom_lock = Mutex::new(());
-            let rule = stream::iter(clash_config.rules)
+            let mut rule = stream::iter(clash_config.rules)
                 .map(|r| self.rule_to_rule(r, cache, &clash_config.rule_providers, &oom_lock))
                 .buffered(10)
                 .flat_map(stream::iter)
@@ -657,45 +658,37 @@ impl Importer for Clash {
                 )
                 .await;
 
+            // A config without MATCH would drop every untouched connection.
+            // Fall back to the first selector (which usually defaults to its
+            // url-test group), then to the first auto group or proxy.
+            if !rule
+                .iter()
+                .any(|item| matches!(item.matcher, Matcher::Any(_)))
+            {
+                let target = first_select
+                    .clone()
+                    .or_else(|| first_auto.clone())
+                    .or_else(|| added_proxies.first().cloned())
+                    .unwrap_or_else(|| "local".to_string());
+                rule.push(rule_config::RuleItem {
+                    target: NetRef::new(target.into()),
+                    matcher: Matcher::Any(AnyMatcher {}),
+                });
+            }
+
             config
                 .net
                 .insert(rule_name.clone(), Net::new("rule", json!({ "rule": rule })));
         }
 
         if let Some(select) = &self.select {
-            let mut list = Vec::new();
-            if self.select_auto {
-                if auto_groups.is_empty() && !added_proxies.is_empty() {
-                    // No auto group in the subscription: build one over every
-                    // proxy so a fresh import still probes for a working node.
-                    let name = format!("{select}-auto");
-                    config.net.insert(
-                        name.clone(),
-                        Net::new(
-                            "url-test",
-                            json!({
-                                "selected": added_proxies[0],
-                                "list": added_proxies,
-                                "url": crate::auto_select::default_test_url(),
-                                "interval": 300,
-                                "tolerance": 0,
-                                "test_timeout": 5_000,
-                                "max_failed_times": 5,
-                            }),
-                        ),
-                    );
-                    auto_groups.push(name);
-                }
-                list.extend(auto_groups.iter().cloned());
-            }
-            list.extend(added_proxies.iter().cloned());
             config.net.insert(
                 select.clone(),
                 Net::new(
                     "select",
                     json!({
-                        "selected": list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
-                        "list": list,
+                        "selected": added_proxies.first().cloned().unwrap_or_else(|| "noop".to_string()),
+                        "list": added_proxies,
                     }),
                 ),
             );
@@ -722,7 +715,6 @@ mod tests {
             net: None,
             disable_proxy_group: false,
             select: None,
-            select_auto: false,
             name_map: BTreeMap::new(),
         };
 
@@ -748,7 +740,6 @@ mod tests {
             net: None,
             disable_proxy_group: false,
             select: None,
-            select_auto: false,
             name_map: BTreeMap::new(),
         }
     }
@@ -794,11 +785,11 @@ rules: []
         );
     }
 
+
     #[tokio::test]
-    async fn test_select_auto_defaults_to_the_subscription_auto_group() {
+    async fn test_rule_import_keeps_clash_groups_and_match_target() {
         let mut clash = base_clash();
-        clash.select = Some("proxy".to_string());
-        clash.select_auto = true;
+        clash.rule_name = Some("rule".to_string());
 
         let content = r#"
 proxies:
@@ -811,81 +802,59 @@ proxies:
     server: 127.0.0.1
     port: 2
 proxy-groups:
-  - name: 自动优选
+  - name: auto
     type: url-test
     proxies: [ad, node]
     url: http://example.com/204
     interval: 60
-rules: []
+  - name: main
+    type: select
+    proxies: [auto, ad, node]
+rules:
+  - MATCH,main
 "#;
 
         let mut config = Config::default();
         let cache = crate::storage::MemoryCache::new().await.unwrap();
         clash.process(&mut config, content, &cache).await.unwrap();
 
-        let proxy = config.net.get("proxy").unwrap();
-        assert_eq!(proxy.net_type, "select");
+        let main = config.net.get("main").unwrap();
+        assert_eq!(main.net_type, "select");
         assert_eq!(
-            proxy.opt.get("selected").and_then(|v| v.as_str()),
-            Some("自动优选")
+            main.opt.get("selected").and_then(|v| v.as_str()),
+            Some("auto")
         );
         assert_eq!(
-            proxy.opt.get("list"),
-            Some(&json!(["自动优选", "ad", "node"]))
+            main.opt.get("list"),
+            Some(&json!(["auto", "ad", "node"]))
         );
-        assert_eq!(config.net.get("自动优选").unwrap().net_type, "url-test");
+        assert_eq!(config.net.get("auto").unwrap().net_type, "url-test");
+        assert_eq!(config.net.get("rule").unwrap().net_type, "rule");
+        let rules = config.net.get("rule").unwrap().opt.get("rule").unwrap();
+        assert!(rules.as_array().unwrap().iter().any(|rule| {
+            rule.get("target").and_then(|target| target.as_str()) == Some("main")
+        }));
     }
 
     #[tokio::test]
-    async fn test_select_auto_builds_a_group_when_the_subscription_has_none() {
+    async fn test_rule_import_adds_match_when_the_subscription_has_none() {
         let mut clash = base_clash();
-        clash.select = Some("proxy".to_string());
-        clash.select_auto = true;
+        clash.rule_name = Some("rule".to_string());
 
         let content = r#"
 proxies:
-  - name: ad
-    type: http
-    server: 127.0.0.1
-    port: 1
   - name: node
     type: http
     server: 127.0.0.1
-    port: 2
-proxy-groups: []
-rules: []
-"#;
-
-        let mut config = Config::default();
-        let cache = crate::storage::MemoryCache::new().await.unwrap();
-        clash.process(&mut config, content, &cache).await.unwrap();
-
-        let proxy = config.net.get("proxy").unwrap();
-        assert_eq!(
-            proxy.opt.get("selected").and_then(|v| v.as_str()),
-            Some("proxy-auto")
-        );
-        assert_eq!(
-            proxy.opt.get("list"),
-            Some(&json!(["proxy-auto", "ad", "node"]))
-        );
-        let auto = config.net.get("proxy-auto").unwrap();
-        assert_eq!(auto.net_type, "url-test");
-        assert_eq!(auto.opt.get("interval").and_then(|v| v.as_u64()), Some(300));
-    }
-
-    #[tokio::test]
-    async fn test_select_without_auto_keeps_the_flat_list() {
-        let mut clash = base_clash();
-        clash.select = Some("proxy".to_string());
-
-        let content = r#"
-proxies:
-  - name: ad
-    type: http
-    server: 127.0.0.1
     port: 1
-proxy-groups: []
+proxy-groups:
+  - name: auto
+    type: url-test
+    proxies: [node]
+    url: http://example.com/204
+  - name: main
+    type: select
+    proxies: [auto, node]
 rules: []
 "#;
 
@@ -893,13 +862,10 @@ rules: []
         let cache = crate::storage::MemoryCache::new().await.unwrap();
         clash.process(&mut config, content, &cache).await.unwrap();
 
-        let proxy = config.net.get("proxy").unwrap();
-        assert_eq!(
-            proxy.opt.get("selected").and_then(|v| v.as_str()),
-            Some("ad")
-        );
-        assert_eq!(proxy.opt.get("list"), Some(&json!(["ad"])));
-        assert!(config.net.get("proxy-auto").is_none());
+        let rules = config.net.get("rule").unwrap().opt.get("rule").unwrap().as_array().unwrap();
+        let last = rules.last().unwrap();
+        assert_eq!(last.get("target").and_then(|v| v.as_str()), Some("main"));
+        assert_eq!(last.get("type").and_then(|v| v.as_str()), Some("any"));
     }
 
     #[test]

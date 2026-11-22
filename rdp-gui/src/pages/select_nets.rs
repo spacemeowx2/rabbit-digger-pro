@@ -95,11 +95,12 @@ fn delay_label(state: Option<&DelayState>) -> Option<(String, gpui::Rgba)> {
 impl Render for SelectNetsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let query = self.search_input.read(cx).text().trim().to_lowercase();
-        let (config, delays, scope) = {
+        let (config, delays, auto_selected, scope) = {
             let store = self.store.read(cx);
             (
                 store.config.clone(),
                 store.delays.clone(),
+                store.auto_selected.clone(),
                 store.delay_scope.clone(),
             )
         };
@@ -183,16 +184,33 @@ impl Render for SelectNetsPage {
             let meta = if net.auto {
                 let mut facts = Vec::new();
                 if let Some(interval) = net.interval {
-                    facts.push(format!("每 {interval}s 自动检测"));
+                    facts.push(format!("每 {interval}s 检测"));
                 }
                 if net.kind == "url-test" {
                     if let Some(tolerance) = net.tolerance {
                         facts.push(format!("容差 {tolerance}ms"));
                     }
                 }
+                match auto_selected.get(&net.name) {
+                    Some(status) => facts.push(format!("当前：{}", status.selected)),
+                    None => facts.push("自动检测中…".to_string()),
+                }
                 facts.join(" · ")
             } else {
-                format!("当前：{selected_label}")
+                let mut meta = format!("当前：{selected_label}");
+                if let Some(status) = auto_selected.get(&selected_label) {
+                    meta.push_str(&format!("（自动：{}）", status.selected));
+                }
+                meta
+            };
+            let meta_color = if net.auto {
+                if auto_selected.contains_key(&net.name) {
+                    t::ok()
+                } else {
+                    t::muted()
+                }
+            } else {
+                t::accent()
             };
 
             let mut body = div().flex().flex_col().gap_3().child(
@@ -210,7 +228,7 @@ impl Render for SelectNetsPage {
                     .child(
                         div()
                             .text_xs()
-                            .text_color(if net.auto { t::ok() } else { t::accent() })
+                            .text_color(meta_color)
                             .child(meta),
                     )
                     .child(div().flex_1())

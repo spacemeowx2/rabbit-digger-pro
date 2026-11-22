@@ -106,6 +106,11 @@ struct DelayParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct NetStatusParams {
+    net_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct UserdataPathParams {
     path: String,
 }
@@ -398,6 +403,13 @@ async fn handle_request(request: RpcRequest, ctx: &Ctx) -> RpcResponse {
             };
             net_delay(ctx, params).await
         }
+        "net.status" => {
+            let params: NetStatusParams = match serde_json::from_value(request.params) {
+                Ok(params) => params,
+                Err(error) => return invalid_params(id, error),
+            };
+            net_status(ctx, &params.net_name).await
+        }
         "userdata.get" => {
             let params: UserdataPathParams = match serde_json::from_value(request.params) {
                 Ok(params) => params,
@@ -579,6 +591,39 @@ async fn net_delay(ctx: &Ctx, params: DelayParams) -> Result<JsonValue, ApiError
         }
         _ => Ok(JsonValue::Null),
     }
+}
+
+async fn net_status(ctx: &Ctx, name: &str) -> Result<JsonValue, ApiError> {
+    let Some(running) = ctx.rd.get_net(name).await? else {
+        return Ok(JsonValue::Null);
+    };
+    let net = running.as_net();
+    let net = net.get_inner().unwrap_or(net);
+
+    if let Some(url_test) = net.downcast::<crate::url_test::UrlTestNet>() {
+        let (index, selected) = url_test
+            .current_selection()
+            .await
+            .map_err(ApiError::other)?;
+        return Ok(json!({
+            "type": "url-test",
+            "index": index,
+            "selected": selected,
+        }));
+    }
+    if let Some(fallback) = net.downcast::<crate::fallback::FallbackNet>() {
+        let (index, selected) = fallback
+            .current_selection()
+            .await
+            .map_err(ApiError::other)?;
+        return Ok(json!({
+            "type": "fallback",
+            "index": index,
+            "selected": selected,
+        }));
+    }
+
+    Ok(json!({ "type": "other" }))
 }
 
 async fn userdata_get(ctx: &Ctx, path: &str) -> Result<JsonValue, ApiError> {

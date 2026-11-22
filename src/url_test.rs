@@ -1,4 +1,4 @@
-﻿use rd_interface::prelude::*;
+use rd_interface::prelude::*;
 use rd_interface::{
     async_trait, registry::Builder, Address, Context, INet, Net, Registry, Result, TcpBind,
     TcpConnect, TcpListener, TcpStream, UdpBind, UdpSocket,
@@ -52,6 +52,11 @@ impl UrlTestNet {
                 config.max_failed_times,
             )?,
         })
+    }
+
+    /// Index and name of the candidate traffic currently goes through.
+    pub async fn current_selection(&self) -> Result<(usize, String)> {
+        self.inner.current_selection().await
     }
 }
 
@@ -365,6 +370,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(net.inner.current_index().await.unwrap(), 1);
+        assert_eq!(
+            net.current_selection().await.unwrap(),
+            (1, "fast".to_string())
+        );
     }
 
     #[tokio::test]
