@@ -36,7 +36,31 @@ struct Args {
     api: Option<String>,
 }
 
+#[cfg(all(windows, not(target_family = "wasm")))]
+fn init_platform() {
+    // GPUI has no manifest to declare DPI awareness, so a high-DPI display
+    // would otherwise scale the window as a bitmap. Do it before any window
+    // exists; PerMonitorV2 keeps dragging between monitors sharp.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetProcessDpiAwarenessContext(value: isize) -> i32;
+        fn SetProcessDPIAware() -> i32;
+    }
+
+    const PER_MONITOR_AWARE_V2: isize = -4;
+    unsafe {
+        if SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) == 0 {
+            SetProcessDPIAware();
+        }
+    }
+}
+
+#[cfg(not(all(windows, not(target_family = "wasm"))))]
+fn init_platform() {}
+
 fn main() {
+    init_platform();
+
     #[cfg(target_family = "wasm")]
     {
         console_error_panic_hook::set_once();
