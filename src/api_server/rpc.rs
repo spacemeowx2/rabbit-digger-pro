@@ -479,17 +479,39 @@ async fn get_config_value(ctx: &Ctx) -> Result<JsonValue, ApiError> {
 async fn apply_config(ctx: &Ctx, source: ImportSource) -> Result<(), ApiError> {
     const LAST_SOURCE_KEY: &str = "daemon/last_source";
     if let Some(sender) = &ctx.source_sender {
+        tracing::info!("config.apply: sender present");
         if let Ok(json) = serde_json::to_string(&source) {
-            let _ = ctx.userdata.set(LAST_SOURCE_KEY, &json).await;
-        }
-        sender
-            .send(source)
+            tracing::info!("config.apply: writing last source");
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                ctx.userdata.set(LAST_SOURCE_KEY, &json),
+            )
             .await
-            .map_err(|_| ApiError::Anyhow(anyhow::anyhow!("Engine loop is not running")))?;
+            {
+                Ok(result) => tracing::info!("config.apply: last source stored={}", result.is_ok()),
+                Err(_) => tracing::warn!("config.apply: saving last source timed out"),
+            }
+        }
+        tracing::info!("config.apply: queueing source");
+        match tokio::time::timeout(Duration::from_secs(5), sender.send(source)).await {
+            Ok(Ok(())) => tracing::info!("config.apply: source queued"),
+            Ok(Err(_)) => {
+                return Err(ApiError::Anyhow(anyhow::anyhow!(
+                    "Engine loop is not running"
+                )))
+            }
+            Err(_) => {
+                return Err(ApiError::Anyhow(anyhow::anyhow!(
+                    "Engine config queue is busy"
+                )))
+            }
+        }
     } else {
+        tracing::info!("config.apply: no source sender, replacing engine directly");
         let stream = ctx.cfg_mgr.config_stream(source).await?;
         ctx.rd.stop().await?;
         tokio::spawn(ctx.rd.clone().start_stream(stream));
+        tracing::info!("config.apply: engine spawned");
     }
     Ok(())
 }

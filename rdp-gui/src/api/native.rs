@@ -7,7 +7,10 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::{BackendEvent, Connection};
 
-pub fn connect(url: String) -> (Connection, UnboundedReceiver<BackendEvent>) {
+pub fn connect(
+    url: String,
+    token: Option<String>,
+) -> (Connection, UnboundedReceiver<BackendEvent>) {
     let (event_tx, event_rx) = unbounded();
     let (outbox, outbox_rx) = unbounded::<String>();
 
@@ -26,7 +29,7 @@ pub fn connect(url: String) -> (Connection, UnboundedReceiver<BackendEvent>) {
                     return;
                 }
             };
-            runtime.block_on(pump(url, event_tx, outbox_rx));
+            runtime.block_on(pump(url, token, event_tx, outbox_rx));
         })
         .expect("failed to spawn the rpc thread");
 
@@ -35,10 +38,37 @@ pub fn connect(url: String) -> (Connection, UnboundedReceiver<BackendEvent>) {
 
 async fn pump(
     url: String,
+    token: Option<String>,
     event_tx: futures::channel::mpsc::UnboundedSender<BackendEvent>,
     mut outbox_rx: futures::channel::mpsc::UnboundedReceiver<String>,
 ) {
-    let (socket, _response) = match tokio_tungstenite::connect_async(&url).await {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut request = match url.clone().into_client_request() {
+        Ok(request) => request,
+        Err(error) => {
+            let _ = event_tx.unbounded_send(BackendEvent::Closed(error.to_string()));
+            return;
+        }
+    };
+    if let Some(token) = token {
+        match token.parse() {
+            Ok(value) => {
+                request.headers_mut().insert(
+                    tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
+                    value,
+                );
+            }
+            Err(error) => {
+                let _ = event_tx.unbounded_send(BackendEvent::Closed(format!(
+                    "invalid service token: {error}"
+                )));
+                return;
+            }
+        }
+    }
+
+    let (socket, _response) = match tokio_tungstenite::connect_async(request).await {
         Ok(pair) => pair,
         Err(error) => {
             let _ = event_tx.unbounded_send(BackendEvent::Closed(error.to_string()));

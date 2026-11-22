@@ -9,16 +9,26 @@ use web_sys::{MessageEvent, WebSocket};
 
 use super::{BackendEvent, Connection};
 
-pub fn connect(url: String) -> (Connection, UnboundedReceiver<BackendEvent>) {
+pub fn connect(
+    mut url: String,
+    token: Option<String>,
+) -> (Connection, UnboundedReceiver<BackendEvent>) {
+    if let Some(token) = token {
+        url.push_str(if url.contains('?') {
+            "&token="
+        } else {
+            "?token="
+        });
+        url.push_str(&token);
+    }
     let (event_tx, event_rx) = unbounded();
     let (outbox, mut outbox_rx) = unbounded::<String>();
 
     let socket = match WebSocket::new(&url) {
         Ok(socket) => socket,
         Err(error) => {
-            let _ = event_tx.unbounded_send(BackendEvent::Closed(format!(
-                "WebSocket failed: {error:?}"
-            )));
+            let _ = event_tx
+                .unbounded_send(BackendEvent::Closed(format!("WebSocket failed: {error:?}")));
             return (Connection { outbox }, event_rx);
         }
     };

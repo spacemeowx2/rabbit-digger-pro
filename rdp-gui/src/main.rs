@@ -6,6 +6,8 @@ mod components;
 #[cfg(not(target_family = "wasm"))]
 mod engine;
 mod pages;
+#[cfg(windows)]
+mod service;
 mod store;
 mod theme;
 
@@ -34,6 +36,26 @@ struct Args {
     /// Attach to an already running daemon instead of starting the engine.
     #[arg(long, env = "RD_API")]
     api: Option<String>,
+
+    /// Internal: run the privileged TUN engine under the Windows SCM.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service_run: bool,
+
+    /// Internal: directory used by the service for settings and subscriptions.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service_data_dir: Option<std::path::PathBuf>,
+
+    /// Internal: copy this executable to Program Files and install the service.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    install_service: bool,
+
+    /// Internal: stop and remove the service.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    uninstall_service: bool,
 }
 
 #[cfg(all(windows, not(target_family = "wasm")))]
@@ -67,7 +89,46 @@ fn main() {
         gpui_platform::web_init();
     }
 
-    let endpoint = endpoint();
+    #[cfg(not(target_family = "wasm"))]
+    let args = <Args as clap::Parser>::parse();
+
+    #[cfg(windows)]
+    {
+        if args.service_run {
+            if let Err(error) = service::run_service() {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+        if args.install_service {
+            let data_dir = args
+                .service_data_dir
+                .clone()
+                .unwrap_or_else(rabbit_digger_pro::util::app_dirs::data_dir);
+            if let Err(error) = service::install_service(data_dir) {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+        if args.uninstall_service {
+            let data_dir = args
+                .service_data_dir
+                .clone()
+                .unwrap_or_else(rabbit_digger_pro::util::app_dirs::data_dir);
+            if let Err(error) = service::uninstall_service(data_dir) {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    let (endpoint, token, backend) = endpoint(&args);
+    #[cfg(target_family = "wasm")]
+    let (endpoint, token, backend) = (endpoint(), None::<String>, store::Backend::External);
 
     gpui_platform::application()
         .with_quit_mode(QuitMode::LastWindowClosed)
@@ -82,30 +143,40 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(1120.), px(760.)), cx);
             cx.open_window(
                 WindowOptions::default().window_bounds(WindowBounds::Windowed(bounds)),
-                |_window, cx| cx.new(|cx| app::Root::new(endpoint.clone(), cx)),
+                |_window, cx| {
+                    cx.new(|cx| app::Root::new(endpoint.clone(), token.clone(), backend, cx))
+                },
             )
             .expect("failed to open the main window");
             cx.activate(true);
         });
 }
 
-/// Native builds start the engine in-process and talk to its API; the daemon
-/// stays an option for attaching to an existing instance.
+/// Native builds use the installed service when configured, otherwise start
+/// the engine in-process. `--api` still attaches to an external daemon.
 #[cfg(not(target_family = "wasm"))]
-fn endpoint() -> String {
-    let args = <Args as clap::Parser>::parse();
-    if let Some(api) = args.api {
-        return api;
+fn endpoint(args: &Args) -> (String, Option<String>, store::Backend) {
+    if let Some(api) = &args.api {
+        return (api.clone(), None, store::Backend::External);
+    }
+
+    #[cfg(windows)]
+    if let Some(config) = service::read_user_config() {
+        return (config.endpoint, Some(config.token), store::Backend::Service);
     }
 
     engine::init_logging();
-    match engine::start(args.config) {
-        Ok(addr) => addr.to_string(),
+    match engine::start(args.config.clone()) {
+        Ok(addr) => (addr.to_string(), None, store::Backend::Embedded),
         Err(error) => {
             // Keep the window usable: it shows the connection as failed and
             // the reason in the status page.
             eprintln!("failed to start the embedded engine: {error:#}");
-            api::DEFAULT_ENDPOINT.to_string()
+            (
+                api::DEFAULT_ENDPOINT.to_string(),
+                None,
+                store::Backend::Embedded,
+            )
         }
     }
 }

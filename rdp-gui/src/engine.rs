@@ -102,6 +102,13 @@ async fn boot(
 /// Sends tracing events to the broadcast channel the `logs` RPC topic reads, so
 /// the log page shows what the embedded engine says.
 pub fn init_logging() {
+    init_logging_to_file(None);
+}
+
+/// Native GUI and the service share the same JSON log stream. The service also
+/// appends it to `daemon.log` so startup failures are diagnosable even when the
+/// GUI cannot connect.
+pub fn init_logging_to_file(file: Option<std::fs::File>) {
     use tracing_subscriber::prelude::*;
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
@@ -110,13 +117,29 @@ pub fn init_logging() {
         )
     });
 
-    let subscriber = tracing_subscriber::registry().with(filter).with(
-        tracing_subscriber::fmt::layer()
-            .json()
-            .with_writer(rabbit_digger_pro::log::LogWriter::new),
-    );
-
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    if let Some(file) = file {
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_writer(rabbit_digger_pro::log::LogWriter::new),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_ansi(false)
+                    .with_writer(std::sync::Mutex::new(file)),
+            );
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    } else {
+        let subscriber = tracing_subscriber::registry().with(filter).with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(rabbit_digger_pro::log::LogWriter::new),
+        );
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    }
 }
 
 #[cfg(test)]

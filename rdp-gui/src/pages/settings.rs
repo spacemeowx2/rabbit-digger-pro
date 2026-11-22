@@ -8,7 +8,7 @@ use gpui::{
 
 use crate::components::text_field::TextField;
 use crate::pages::{action, card, chip, page_shell};
-use crate::store::{DaemonSettings, Notice, Store, Subscription};
+use crate::store::{Backend, DaemonSettings, Notice, Store, Subscription};
 use crate::theme as t;
 
 pub struct SettingsPage {
@@ -260,7 +260,18 @@ fn notice_card(notice: &Notice) -> AnyElement {
 
 impl Render for SettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (settings, loaded, busy, notice, suggestion, engine_state, endpoint, config_text) = {
+        let (
+            settings,
+            loaded,
+            busy,
+            notice,
+            suggestion,
+            engine_state,
+            endpoint,
+            config_text,
+            using_service,
+            tun_blocked,
+        ) = {
             let store = self.store.read(cx);
             let config_text = store
                 .config
@@ -276,6 +287,8 @@ impl Render for SettingsPage {
                 store.engine.state.clone(),
                 store.endpoint.clone(),
                 config_text,
+                store.backend == Backend::Service,
+                cfg!(windows) && store.backend == Backend::Embedded,
             )
         };
 
@@ -349,6 +362,14 @@ impl Render for SettingsPage {
                     return;
                 }
                 toggle_store.update(cx, |store, cx| {
+                    if tun_blocked && !store.settings.tun_enabled {
+                        store.settings_notice = Some(Notice {
+                            ok: false,
+                            text: "TUN 需要通过系统服务运行，请先在下方安装 TUN 服务。".to_string(),
+                        });
+                        cx.notify();
+                        return;
+                    }
                     store.settings.tun_enabled = !store.settings.tun_enabled;
                     store.save_settings();
                     cx.notify();
@@ -459,6 +480,78 @@ impl Render for SettingsPage {
 
         let stop_store = self.store.clone();
         let reload_store = self.store.clone();
+
+        #[cfg(windows)]
+        let service_configured = crate::service::is_configured();
+        #[cfg(windows)]
+        let service_card: Option<AnyElement> = {
+            let install_store = self.store.clone();
+            let uninstall_store = self.store.clone();
+            let status = if using_service {
+                "已通过系统服务运行，TUN 不再需要管理员权限。"
+            } else if service_configured {
+                "服务已安装，但当前窗口仍在使用内置引擎；重新安装或重启应用后生效。"
+            } else {
+                "安装一次系统服务（会弹一次 UAC）。之后 TUN 由后台服务运行，不再需要管理员权限。"
+            };
+            Some(
+                card(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("TUN 系统服务"),
+                        )
+                        .child(div().text_xs().text_color(t::muted()).child(status))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    action()
+                                        .id("install-service")
+                                        .border_color(t::accent())
+                                        .text_color(t::accent())
+                                        .child(if service_configured {
+                                            "重新安装服务"
+                                        } else {
+                                            "安装服务"
+                                        })
+                                        .on_click(cx.listener(
+                                            move |_this, _event, _window, cx| {
+                                                install_store.update(cx, |store, cx| {
+                                                    store.install_tun_service(cx);
+                                                });
+                                            },
+                                        )),
+                                )
+                                .when(service_configured, |el| {
+                                    el.child(
+                                        action()
+                                            .id("uninstall-service")
+                                            .child("卸载服务")
+                                            .on_click(cx.listener(
+                                                move |_this, _event, _window, cx| {
+                                                    uninstall_store.update(cx, |store, cx| {
+                                                        store.uninstall_tun_service(cx);
+                                                    });
+                                                },
+                                            )),
+                                    )
+                                }),
+                        ),
+                )
+                .into_any_element(),
+            )
+        };
+        #[cfg(not(windows))]
+        let service_card: Option<AnyElement> = None;
+        #[cfg(not(windows))]
+        let _ = using_service;
 
         page_shell(
             "设置",
@@ -603,11 +696,14 @@ impl Render for SettingsPage {
                             div()
                                 .text_xs()
                                 .text_color(t::muted())
-                                .child(
-                                    "Windows 下 TUN 需要以管理员身份启动，且 wintun.dll 必须与 rdp-gui.exe 同目录；目前仅接管 IPv4。",
-                                ),
+                                .child(if cfg!(windows) {
+                                    "Windows 下 TUN 由系统服务运行；安装服务只需一次管理员授权。目前仅接管 IPv4。"
+                                } else {
+                                    "TUN 需要以 root 权限运行；目前仅接管 IPv4。"
+                                }),
                         ),
                 ))
+                .children(service_card)
                 .child(card(
                     div()
                         .flex()

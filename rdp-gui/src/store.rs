@@ -17,6 +17,15 @@ pub const TRAFFIC_POINTS: usize = 48;
 pub const SETTINGS_KEY: &str = "daemon/settings";
 pub const DELAY_TEST_URL: &str = "http://www.gstatic.com/generate_204";
 
+/// Where the UI's RPC socket points. TUN can only be launched from a backend
+/// that already has the needed privileges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    Embedded,
+    Service,
+    External,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ConnRow {
     pub id: String,
@@ -278,6 +287,8 @@ enum Pending {
 
 pub struct Store {
     pub endpoint: String,
+    pub token: Option<String>,
+    pub backend: Backend,
     pub connected: bool,
     pub config: Option<Value>,
     pub engine: EngineStatus,
@@ -303,6 +314,7 @@ pub struct Store {
     /// Label of the running delay test, `None` when idle.
     pub delay_scope: Option<String>,
     delay_pending: usize,
+    service_task: Option<Task<()>>,
 
     conn: Option<Connection>,
     next_id: u64,
@@ -314,9 +326,16 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(endpoint: String, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        endpoint: String,
+        token: Option<String>,
+        backend: Backend,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut store = Self {
             endpoint,
+            token,
+            backend,
             connected: false,
             config: None,
             engine: EngineStatus {
@@ -340,6 +359,7 @@ impl Store {
             auto_selected: HashMap::new(),
             delay_scope: None,
             delay_pending: 0,
+            service_task: None,
             conn: None,
             next_id: 1,
             pending: HashMap::new(),
@@ -367,7 +387,7 @@ impl Store {
     }
 
     fn connect(&mut self, cx: &mut Context<Self>) {
-        let (conn, mut events) = api::connect(api::ws_url(&self.endpoint));
+        let (conn, mut events) = api::connect(api::ws_url(&self.endpoint), self.token.clone());
         self.conn = Some(conn);
 
         self.pump = Some(cx.spawn(async move |this, cx| {
@@ -827,6 +847,137 @@ impl Store {
             json!({ "path": SETTINGS_KEY, "value": value }),
             Pending::SettingsPut { apply: true },
         );
+    }
+
+    /// One-time elevated install. The service copy lives in Program Files, so
+    /// moving or deleting the portable GUI later cannot break it.
+    #[cfg(windows)]
+    pub fn install_tun_service(&mut self, cx: &mut Context<Self>) {
+        if self.settings_busy {
+            return;
+        }
+        self.settings_busy = true;
+        self.settings_notice = Some(Notice {
+            ok: false,
+            text: "正在请求管理员权限…".to_string(),
+        });
+        // The service restores the last config on start. Stop the in-process
+        // engine first so its listener and TUN cannot race with the service.
+        if self.backend == Backend::Embedded {
+            self.engine_stop();
+        }
+        cx.notify();
+
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let _ = tx.send(crate::service::install_from_gui());
+        });
+        self.service_task = Some(cx.spawn(async move |this, cx| {
+            let result = match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("installer thread exited")),
+            };
+            match result {
+                Ok(()) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.settings_busy = false;
+                        store.settings_notice = Some(Notice {
+                            ok: true,
+                            text: "服务已安装，正在重启以连接服务…".to_string(),
+                        });
+                        cx.notify();
+                    });
+                    if let Err(error) = crate::service::restart_app() {
+                        let _ = this.update(cx, |store, cx| {
+                            store.settings_busy = false;
+                            store.settings_notice = Some(Notice {
+                                ok: false,
+                                text: format!("服务已安装，但重启失败：{error:#}"),
+                            });
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let _ = this.update(cx, |_store, cx| cx.quit());
+                }
+                Err(error) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.settings_busy = false;
+                        store.settings_notice = Some(Notice {
+                            ok: false,
+                            text: format!("安装系统服务失败：{error:#}"),
+                        });
+                        cx.notify();
+                    });
+                }
+            }
+        }));
+    }
+
+    #[cfg(windows)]
+    pub fn uninstall_tun_service(&mut self, cx: &mut Context<Self>) {
+        if self.settings_busy {
+            return;
+        }
+        self.settings_busy = true;
+        self.settings_notice = Some(Notice {
+            ok: false,
+            text: "正在请求管理员权限…".to_string(),
+        });
+        // TUN cannot run in the embedded engine. Persist it off while the
+        // service is still available, so the restarted GUI does not fail.
+        if self.settings.tun_enabled {
+            self.settings.tun_enabled = false;
+            self.save_settings();
+        }
+        cx.notify();
+
+        let (tx, rx) = futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let _ = tx.send(crate::service::uninstall_from_gui());
+        });
+        self.service_task = Some(cx.spawn(async move |this, cx| {
+            let result = match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(anyhow::anyhow!("installer thread exited")),
+            };
+            match result {
+                Ok(()) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.settings_busy = false;
+                        store.settings_notice = Some(Notice {
+                            ok: true,
+                            text: "服务已卸载，正在重启回内置引擎…".to_string(),
+                        });
+                        cx.notify();
+                    });
+                    if let Err(error) = crate::service::restart_app() {
+                        let _ = this.update(cx, |store, cx| {
+                            store.settings_busy = false;
+                            store.settings_notice = Some(Notice {
+                                ok: false,
+                                text: format!("服务已卸载，但重启失败：{error:#}"),
+                            });
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    let _ = this.update(cx, |_store, cx| cx.quit());
+                }
+                Err(error) => {
+                    let _ = this.update(cx, |store, cx| {
+                        store.settings_busy = false;
+                        store.settings_notice = Some(Notice {
+                            ok: false,
+                            text: format!("卸载系统服务失败：{error:#}"),
+                        });
+                        cx.notify();
+                    });
+                }
+            }
+        }));
     }
 
     pub fn add_subscription(&mut self, url: String) {

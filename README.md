@@ -67,12 +67,22 @@ See [rdp-gui/README.md](rdp-gui/README.md) for the web build and its limits.
 
 ### Windows TUN
 
-Windows TUN mode requires an elevated process and a `wintun.dll` next to the
-executable. It takes over IPv4 traffic with the split routes `0.0.0.0/1` and
+Windows TUN mode runs the engine through a LocalSystem service. The GUI installs
+the service from its settings page with one UAC prompt; after that it only talks
+to the service over the localhost JSON-RPC endpoint with a per-user token, so
+normal launches do not need elevation.
+
+The installer copies `rdp-service.exe` and `wintun.dll` to
+`%ProgramFiles%\RabbitDiggerPro\` and stores the service configuration in
+`%ProgramData%\RabbitDiggerPro\`. Engine settings and subscriptions stay in the
+user's local data directory and are shared with the service, so switching
+between the embedded engine and the service keeps the same UI state.
+
+TUN takes over IPv4 traffic with the split routes `0.0.0.0/1` and
 `128.0.0.0/1` instead of deleting the physical default route, sets the TUN DNS
 to the tunnel gateway, and records every route/DNS change with
-`SideEffectManager` so a normal stop or the next GUI start can roll it back.
-Proxy and bootstrap sockets are pinned to the physical interface with
+`SideEffectManager` so a normal stop or the next start can roll it back. Proxy
+and bootstrap sockets are pinned to the physical interface with
 `IP_UNICAST_IF` (the Windows equivalent of `SO_MARK`), which keeps the engine's
 own traffic out of the tunnel.
 

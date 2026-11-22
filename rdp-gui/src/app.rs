@@ -48,8 +48,13 @@ pub struct Root {
 }
 
 impl Root {
-    pub fn new(endpoint: String, cx: &mut Context<Self>) -> Self {
-        let store = cx.new(|cx| Store::new(endpoint, cx));
+    pub fn new(
+        endpoint: String,
+        token: Option<String>,
+        backend: crate::store::Backend,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let store = cx.new(|cx| Store::new(endpoint, token, backend, cx));
         let status_store = store.clone();
         let connections_store = store.clone();
         let logs_store = store.clone();

@@ -56,6 +56,11 @@ web-sys = { version = "0.3", features = [
     "Url",
 ] }
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
 [[bin]]
 name = "rdp-gui"
 path = "src/main.rs"

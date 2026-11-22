@@ -1,4 +1,5 @@
 mod daemon;
+pub use daemon::run_daemon_with_shutdown;
 
 #[cfg(target_os = "linux")]
 mod linux;

@@ -33,8 +33,11 @@ impl Connection {
 }
 
 /// Opens a socket and returns the write handle plus the incoming event stream.
-pub fn connect(url: String) -> (Connection, UnboundedReceiver<BackendEvent>) {
-    imp::connect(url)
+pub fn connect(
+    url: String,
+    token: Option<String>,
+) -> (Connection, UnboundedReceiver<BackendEvent>) {
+    imp::connect(url, token)
 }
 
 /// Default daemon endpoint.
