@@ -598,7 +598,15 @@ impl Render for SettingsPage {
                                     .child(div().w(px(140.)).text_color(t::muted()).child("MTU"))
                                     .child(div().w(px(120.)).child(self.mtu_input.clone())),
                             )
-                        }),
+                        })
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(t::muted())
+                                .child(
+                                    "Windows 下 TUN 需要以管理员身份启动，且 wintun.dll 必须与 rdp-gui.exe 同目录；目前仅接管 IPv4。",
+                                ),
+                        ),
                 ))
                 .child(card(
                     div()

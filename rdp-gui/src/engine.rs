@@ -58,6 +58,10 @@ async fn boot(
     config: PathBuf,
     ready: &std::sync::mpsc::Sender<Result<SocketAddr, String>>,
 ) -> Result<()> {
+    // A previous crash may have left TUN routes/DNS behind.
+    let se_path = rabbit_digger_pro::util::app_dirs::data_dir().join("side_effects.json");
+    rd_interface::SideEffectManager::recover(&se_path.to_string_lossy());
+
     let app = App::new().await.context("failed to create the runtime")?;
 
     // The same shape the daemon uses: the initial file is the first source, and

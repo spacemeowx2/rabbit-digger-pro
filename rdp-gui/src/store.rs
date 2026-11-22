@@ -147,6 +147,10 @@ impl DaemonSettings {
             // engine's own bootstrap traffic loops back into the tunnel.
             local["mark"] = json!(255);
             bootstrap_out["mark"] = json!(255);
+            // Windows has no SO_MARK; force these sockets onto the physical
+            // interface so proxy/DNS/direct traffic cannot enter the TUN.
+            local["bind_default_interface"] = json!(true);
+            bootstrap_out["bind_default_interface"] = json!(true);
         }
         net.insert("local".to_string(), local);
         net.insert("rdp_bootstrap_out".to_string(), bootstrap_out);
@@ -161,6 +165,7 @@ impl DaemonSettings {
         let mut node_out = json!({ "type": "local", "lookup_host": "rdp_bootstrap_dns" });
         if self.tun_enabled {
             node_out["mark"] = json!(255);
+            node_out["bind_default_interface"] = json!(true);
         }
         net.insert("rdp_node_out".to_string(), node_out);
 
@@ -1221,6 +1226,15 @@ mod tests {
         assert_eq!(config["server"]["tun"]["dns_mode"], "fake-ip");
         assert_eq!(config["server"]["tun"]["ip_addr"], "10.0.0.1/24");
         assert_eq!(config["net"]["local"]["mark"], 255);
+        assert_eq!(config["net"]["local"]["bind_default_interface"], true);
+        assert_eq!(
+            config["net"]["rdp_bootstrap_out"]["bind_default_interface"],
+            true
+        );
+        assert_eq!(
+            config["net"]["rdp_node_out"]["bind_default_interface"],
+            true
+        );
     }
 
     #[test]

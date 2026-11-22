@@ -65,6 +65,24 @@ cd rdp-gui && trunk serve                     # browser build
 
 See [rdp-gui/README.md](rdp-gui/README.md) for the web build and its limits.
 
+### Windows TUN
+
+Windows TUN mode requires an elevated process and a `wintun.dll` next to the
+executable. It takes over IPv4 traffic with the split routes `0.0.0.0/1` and
+`128.0.0.0/1` instead of deleting the physical default route, sets the TUN DNS
+to the tunnel gateway, and records every route/DNS change with
+`SideEffectManager` so a normal stop or the next GUI start can roll it back.
+Proxy and bootstrap sockets are pinned to the physical interface with
+`IP_UNICAST_IF` (the Windows equivalent of `SO_MARK`), which keeps the engine's
+own traffic out of the tunnel.
+
+IPv6 is not captured yet. For live route tests, use the watchdog first:
+
+```powershell
+# elevated; restores routes/DNS even if the test process dies
+powershell -ExecutionPolicy Bypass -File scripts/tun-watchdog.ps1 -TimeoutSeconds 45
+```
+
 ## crates
 
 * rd-derive
