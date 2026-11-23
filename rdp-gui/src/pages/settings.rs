@@ -358,10 +358,29 @@ impl Render for SettingsPage {
             );
         }
 
+        #[cfg(windows)]
+        let service_configured = crate::service::is_configured();
+        #[cfg(not(windows))]
+        let service_configured = false;
+        let tun_pending = settings.tun_enabled && tun_blocked;
+        let tun_pending_label = if tun_pending {
+            if service_version == ServiceVersion::Outdated {
+                "待更新服务"
+            } else if service_configured {
+                "待重启应用"
+            } else {
+                "待安装服务"
+            }
+        } else {
+            ""
+        };
+
         let toggle_store = self.store.clone();
-        let tun_toggle = chip(settings.tun_enabled)
+        let tun_toggle = chip(settings.tun_enabled && !tun_blocked)
             .id("tun-toggle")
-            .child(if settings.tun_enabled {
+            .child(if tun_pending {
+                tun_pending_label
+            } else if settings.tun_enabled {
                 "已启用"
             } else {
                 "已关闭"
@@ -491,8 +510,6 @@ impl Render for SettingsPage {
         let stop_store = self.store.clone();
         let reload_store = self.store.clone();
 
-        #[cfg(windows)]
-        let service_configured = crate::service::is_configured();
         #[cfg(windows)]
         let service_card: Option<AnyElement> = {
             let install_store = self.store.clone();
@@ -705,6 +722,16 @@ impl Render for SettingsPage {
                                     .gap_3()
                                     .child(div().w(px(140.)).text_color(t::muted()).child("MTU"))
                                     .child(div().w(px(120.)).child(self.mtu_input.clone())),
+                            )
+                        })
+                        .when(tun_pending, |el| {
+                            el.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(t::warn())
+                                    .child(
+                                        "TUN 设置已保存，但系统服务尚未安装/更新，TUN 还没有生效。",
+                                    ),
                             )
                         })
                         .child(
