@@ -26,6 +26,17 @@ pub enum Backend {
     External,
 }
 
+/// Relationship between the running GUI binary and the installed service
+/// copy. The service is a copy of this executable, so a byte difference means
+/// one of them is stale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceVersion {
+    NotApplicable,
+    NotInstalled,
+    Current,
+    Outdated,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ConnRow {
     pub id: String,
@@ -289,6 +300,7 @@ pub struct Store {
     pub endpoint: String,
     pub token: Option<String>,
     pub backend: Backend,
+    pub service_version: ServiceVersion,
     pub connected: bool,
     pub config: Option<Value>,
     pub engine: EngineStatus,
@@ -332,10 +344,16 @@ impl Store {
         backend: Backend,
         cx: &mut Context<Self>,
     ) -> Self {
+        #[cfg(windows)]
+        let service_version = crate::service::version_status();
+        #[cfg(not(windows))]
+        let service_version = ServiceVersion::NotApplicable;
+
         let mut store = Self {
             endpoint,
             token,
             backend,
+            service_version,
             connected: false,
             config: None,
             engine: EngineStatus {

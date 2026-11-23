@@ -27,6 +27,7 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 rd-interface = { path = "../rd-interface" }
+sha2 = "0.10"
 rabbit-digger-pro = { path = "..", default-features = false, features = [
     "ss",
     "trojan",

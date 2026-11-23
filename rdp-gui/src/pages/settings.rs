@@ -8,7 +8,7 @@ use gpui::{
 
 use crate::components::text_field::TextField;
 use crate::pages::{action, card, chip, page_shell};
-use crate::store::{Backend, DaemonSettings, Notice, Store, Subscription};
+use crate::store::{Backend, DaemonSettings, Notice, ServiceVersion, Store, Subscription};
 use crate::theme as t;
 
 pub struct SettingsPage {
@@ -270,6 +270,7 @@ impl Render for SettingsPage {
             endpoint,
             config_text,
             using_service,
+            service_version,
             tun_blocked,
         ) = {
             let store = self.store.read(cx);
@@ -278,6 +279,13 @@ impl Render for SettingsPage {
                 .as_ref()
                 .map(|config| serde_json::to_string_pretty(config).unwrap_or_default())
                 .unwrap_or_else(|| "尚未取得配置".to_string());
+            let service_version = store.service_version;
+            let tun_blocked = cfg!(windows)
+                && match store.backend {
+                    Backend::Embedded => true,
+                    Backend::Service => service_version != ServiceVersion::Current,
+                    Backend::External => false,
+                };
             (
                 store.settings.clone(),
                 store.settings_loaded,
@@ -288,7 +296,8 @@ impl Render for SettingsPage {
                 store.endpoint.clone(),
                 config_text,
                 store.backend == Backend::Service,
-                cfg!(windows) && store.backend == Backend::Embedded,
+                service_version,
+                tun_blocked,
             )
         };
 
@@ -365,7 +374,8 @@ impl Render for SettingsPage {
                     if tun_blocked && !store.settings.tun_enabled {
                         store.settings_notice = Some(Notice {
                             ok: false,
-                            text: "TUN 需要通过系统服务运行，请先在下方安装 TUN 服务。".to_string(),
+                            text: "TUN 需要通过系统服务运行，请先安装或更新下方 TUN 服务。"
+                                .to_string(),
                         });
                         cx.notify();
                         return;
@@ -487,7 +497,10 @@ impl Render for SettingsPage {
         let service_card: Option<AnyElement> = {
             let install_store = self.store.clone();
             let uninstall_store = self.store.clone();
-            let status = if using_service {
+            let service_outdated = service_version == ServiceVersion::Outdated;
+            let status = if service_outdated {
+                "当前程序与已安装的系统服务版本不一致，请更新服务后再启用 TUN。"
+            } else if using_service {
                 "已通过系统服务运行，TUN 不再需要管理员权限。"
             } else if service_configured {
                 "服务已安装，但当前窗口仍在使用内置引擎；重新安装或重启应用后生效。"
@@ -516,7 +529,9 @@ impl Render for SettingsPage {
                                         .id("install-service")
                                         .border_color(t::accent())
                                         .text_color(t::accent())
-                                        .child(if service_configured {
+                                        .child(if service_outdated {
+                                            "更新服务"
+                                        } else if service_configured {
                                             "重新安装服务"
                                         } else {
                                             "安装服务"

@@ -9,6 +9,7 @@
 use std::{
     ffi::{OsStr, OsString},
     fs,
+    io::Read,
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::Command,
@@ -29,6 +30,8 @@ use windows_service::{
     service_dispatcher,
     service_manager::{ServiceManager, ServiceManagerAccess},
 };
+
+use crate::store::ServiceVersion;
 
 pub const SERVICE_NAME: &str = "RabbitDiggerPro";
 pub const SERVICE_ENDPOINT: &str = "127.0.0.1:19091";
@@ -107,6 +110,51 @@ pub fn read_user_config() -> Option<ServiceConfig> {
 
 pub fn is_configured() -> bool {
     read_user_config().is_some()
+}
+
+/// Compares this executable with the copy installed as the service. A byte
+/// difference means the GUI was updated without updating the service (or vice
+/// versa); TUN is blocked until the user reinstalls it.
+pub fn version_status() -> ServiceVersion {
+    if !is_configured() {
+        return ServiceVersion::NotInstalled;
+    }
+    let Ok(current) = std::env::current_exe() else {
+        return ServiceVersion::Outdated;
+    };
+    let Ok(dir) = install_dir() else {
+        return ServiceVersion::Outdated;
+    };
+    let installed = dir.join(SERVICE_BINARY_NAME);
+    if !installed.exists() {
+        return ServiceVersion::Outdated;
+    }
+    if same_file(&current, &installed) {
+        return ServiceVersion::Current;
+    }
+    match (file_hash(&current), file_hash(&installed)) {
+        (Ok(current), Ok(installed)) if current == installed => ServiceVersion::Current,
+        _ => ServiceVersion::Outdated,
+    }
+}
+
+fn file_hash(path: &Path) -> std::io::Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&digest);
+    Ok(result)
 }
 
 /// Runs the elevated installer. Called from `--install-service`; the parent GUI

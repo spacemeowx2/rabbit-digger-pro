@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::pages;
-use crate::store::Store;
+use crate::store::{ServiceVersion, Store};
 use crate::theme as t;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -152,6 +152,7 @@ impl Root {
 
 impl Render for Root {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let outdated = self.store.read(cx).service_version == ServiceVersion::Outdated;
         let body = self.content();
         let sidebar = self.sidebar(cx);
 
@@ -163,7 +164,30 @@ impl Render for Root {
             .text_color(t::text())
             .text_sm()
             .child(sidebar)
-            .child(div().flex_1().h_full().overflow_hidden().child(body));
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .when(outdated, |el| {
+                        el.child(
+                            div()
+                                .mx_4()
+                                .mt_3()
+                                .px_3()
+                                .py_2()
+                                .rounded_md()
+                                .bg(t::accent_soft())
+                                .text_color(t::warn())
+                                .child(
+                                    "系统服务版本与当前程序不一致，请到「设置」更新服务后再启用 TUN。",
+                                ),
+                        )
+                    })
+                    .child(div().flex_1().overflow_hidden().child(body)),
+            );
 
         // The browser has no system fonts, so the wasm build names the face it
         // registered at startup instead of letting GPUI pick its default.
