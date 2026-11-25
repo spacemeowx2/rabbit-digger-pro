@@ -171,6 +171,10 @@ impl DaemonSettings {
             // interface so proxy/DNS/direct traffic cannot enter the TUN.
             local["bind_default_interface"] = json!(true);
             bootstrap_out["bind_default_interface"] = json!(true);
+            // The system resolver now points at the TUN fake-IP DNS, and the
+            // physical ISP resolver may return poisoned answers. Resolve
+            // direct/local names through the controlled bootstrap DNS too.
+            local["lookup_host"] = json!("rdp_bootstrap_dns");
         }
         net.insert("local".to_string(), local);
         net.insert("rdp_bootstrap_out".to_string(), bootstrap_out);
@@ -219,7 +223,7 @@ impl DaemonSettings {
                 json!({
                     "type": "resolve",
                     "net": outbound,
-                    "resolve_net": "local",
+                    "resolve_net": "rdp_bootstrap_dns",
                     "ipv6": false,
                 }),
             );
@@ -1392,6 +1396,11 @@ mod tests {
         assert!(config["import"][0].get("select").is_none());
         assert_eq!(config["server"]["mixed"]["net"], "rule");
         assert_eq!(config["net"]["resolve"]["net"], "rule");
+        assert_eq!(
+            config["net"]["resolve"]["resolve_net"],
+            "rdp_bootstrap_dns"
+        );
+        assert_eq!(config["net"]["local"]["lookup_host"], "rdp_bootstrap_dns");
         assert_eq!(config["server"]["tun"]["dns_mode"], "fake-ip");
         assert_eq!(config["server"]["tun"]["ip_addr"], "10.0.0.1/24");
         assert_eq!(config["net"]["local"]["mark"], 255);
