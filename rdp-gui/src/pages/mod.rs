@@ -37,7 +37,7 @@ pub fn page_shell(
 }
 
 /// A bordered panel used by every page.
-pub fn card(body: impl IntoElement) -> impl IntoElement {
+pub fn card(body: impl IntoElement) -> gpui::Div {
     div()
         .rounded_lg()
         .border_1()

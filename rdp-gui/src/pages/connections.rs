@@ -169,6 +169,8 @@ impl Render for ConnectionsPage {
             "连接",
             "当前活跃的代理连接",
             div()
+                .size_full()
+                .min_h_0()
                 .flex()
                 .flex_col()
                 .gap_3()
@@ -199,24 +201,39 @@ impl Render for ConnectionsPage {
                                 })),
                         ),
                 )
-                .child(card(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .child(header)
-                        .children(body)
-                        .when(count == 0, |el| {
-                            el.child(
+                .child(
+                    card(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_h_0()
+                            .child(header)
+                            .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .h(px(120.))
-                                    .text_color(t::muted())
-                                    .child("没有活跃连接"),
-                            )
-                        }),
-                )),
+                                    .id("connections-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .children(body)
+                                    .when(count == 0, |el| {
+                                        el.child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .h(px(120.))
+                                                .text_color(t::muted())
+                                                .child("没有活跃连接"),
+                                        )
+                                    }),
+                            ),
+                    )
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0(),
+                ),
         )
     }
 }
