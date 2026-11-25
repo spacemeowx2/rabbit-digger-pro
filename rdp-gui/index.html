@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rabbit Digger Pro</title>
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #0f1115;
+      }
+
+      /* GPUI appends one canvas for the whole window. */
+      canvas {
+        position: fixed;
+        inset: 0;
+      }
+
+      #loading {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #8b93a1;
+        font: 14px ui-sans-serif, system-ui, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loading">正在加载 Rabbit Digger Pro…</div>
+  </body>
+</html>

@@ -125,7 +125,7 @@ async fn install(bind: &str, access_token: Option<&str>) -> Result<()> {
 
     println!("Service installed.");
     println!("  Binary: {}", dest.display());
-    println!("  WebUI:  http://{}", bind);
+    println!("  API:  http://{}", bind);
     Ok(())
 }
 
@@ -249,7 +249,7 @@ async fn install_user(bind: &str, access_token: Option<&str>, binary: Option<&Pa
     println!("User service installed.");
     println!("  Binary: {}", dest.display());
     println!("  Unit:   {}", unit_path.display());
-    println!("  WebUI:  http://{}", bind);
+    println!("  API:  http://{}", bind);
     Ok(())
 }
 

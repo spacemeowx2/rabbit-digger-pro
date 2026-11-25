@@ -1,4 +1,5 @@
 mod daemon;
+pub use daemon::run_daemon_with_shutdown;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -17,7 +18,7 @@ use std::process::Command;
 pub enum ServiceAction {
     /// Install rdp as a system service and start it
     Install {
-        /// Bind address for the API/WebUI server
+        /// Bind address for the API server
         #[clap(long, default_value = "127.0.0.1:9091")]
         bind: String,
         /// Access token for API authentication
@@ -27,7 +28,7 @@ pub enum ServiceAction {
     /// Install rdp as a user-level service and start it
     #[cfg(target_os = "linux")]
     InstallUser {
-        /// Bind address for the API/WebUI server
+        /// Bind address for the API server
         #[clap(long, default_value = "127.0.0.1:9091")]
         bind: String,
         /// Access token for API authentication
@@ -59,7 +60,7 @@ pub enum ServiceAction {
     StatusUser,
     /// Run in daemon mode (called by the service manager)
     Run {
-        /// Bind address for the API/WebUI server
+        /// Bind address for the API server
         #[clap(long, default_value = "127.0.0.1:9091")]
         bind: String,
         /// Access token for API authentication

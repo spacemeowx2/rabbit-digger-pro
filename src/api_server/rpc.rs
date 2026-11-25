@@ -106,6 +106,11 @@ struct DelayParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct NetStatusParams {
+    net_name: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct UserdataPathParams {
     path: String,
 }
@@ -398,6 +403,13 @@ async fn handle_request(request: RpcRequest, ctx: &Ctx) -> RpcResponse {
             };
             net_delay(ctx, params).await
         }
+        "net.status" => {
+            let params: NetStatusParams = match serde_json::from_value(request.params) {
+                Ok(params) => params,
+                Err(error) => return invalid_params(id, error),
+            };
+            net_status(ctx, &params.net_name).await
+        }
         "userdata.get" => {
             let params: UserdataPathParams = match serde_json::from_value(request.params) {
                 Ok(params) => params,
@@ -467,17 +479,39 @@ async fn get_config_value(ctx: &Ctx) -> Result<JsonValue, ApiError> {
 async fn apply_config(ctx: &Ctx, source: ImportSource) -> Result<(), ApiError> {
     const LAST_SOURCE_KEY: &str = "daemon/last_source";
     if let Some(sender) = &ctx.source_sender {
+        tracing::info!("config.apply: sender present");
         if let Ok(json) = serde_json::to_string(&source) {
-            let _ = ctx.userdata.set(LAST_SOURCE_KEY, &json).await;
-        }
-        sender
-            .send(source)
+            tracing::info!("config.apply: writing last source");
+            match tokio::time::timeout(
+                Duration::from_secs(2),
+                ctx.userdata.set(LAST_SOURCE_KEY, &json),
+            )
             .await
-            .map_err(|_| ApiError::Anyhow(anyhow::anyhow!("Engine loop is not running")))?;
+            {
+                Ok(result) => tracing::info!("config.apply: last source stored={}", result.is_ok()),
+                Err(_) => tracing::warn!("config.apply: saving last source timed out"),
+            }
+        }
+        tracing::info!("config.apply: queueing source");
+        match tokio::time::timeout(Duration::from_secs(5), sender.send(source)).await {
+            Ok(Ok(())) => tracing::info!("config.apply: source queued"),
+            Ok(Err(_)) => {
+                return Err(ApiError::Anyhow(anyhow::anyhow!(
+                    "Engine loop is not running"
+                )))
+            }
+            Err(_) => {
+                return Err(ApiError::Anyhow(anyhow::anyhow!(
+                    "Engine config queue is busy"
+                )))
+            }
+        }
     } else {
+        tracing::info!("config.apply: no source sender, replacing engine directly");
         let stream = ctx.cfg_mgr.config_stream(source).await?;
         ctx.rd.stop().await?;
         tokio::spawn(ctx.rd.clone().start_stream(stream));
+        tracing::info!("config.apply: engine spawned");
     }
     Ok(())
 }
@@ -579,6 +613,39 @@ async fn net_delay(ctx: &Ctx, params: DelayParams) -> Result<JsonValue, ApiError
         }
         _ => Ok(JsonValue::Null),
     }
+}
+
+async fn net_status(ctx: &Ctx, name: &str) -> Result<JsonValue, ApiError> {
+    let Some(running) = ctx.rd.get_net(name).await? else {
+        return Ok(JsonValue::Null);
+    };
+    let net = running.as_net();
+    let net = net.get_inner().unwrap_or(net);
+
+    if let Some(url_test) = net.downcast::<crate::url_test::UrlTestNet>() {
+        let (index, selected) = url_test
+            .current_selection()
+            .await
+            .map_err(ApiError::other)?;
+        return Ok(json!({
+            "type": "url-test",
+            "index": index,
+            "selected": selected,
+        }));
+    }
+    if let Some(fallback) = net.downcast::<crate::fallback::FallbackNet>() {
+        let (index, selected) = fallback
+            .current_selection()
+            .await
+            .map_err(ApiError::other)?;
+        return Ok(json!({
+            "type": "fallback",
+            "index": index,
+            "selected": selected,
+        }));
+    }
+
+    Ok(json!({ "type": "other" }))
 }
 
 async fn userdata_get(ctx: &Ctx, path: &str) -> Result<JsonValue, ApiError> {
@@ -775,12 +842,9 @@ fn install_zip_dir_component(component: &UpdateComponent, bytes: &[u8]) -> Resul
 }
 
 fn ensure_update_path(path: &Path) -> Result<(), ApiError> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let allowed_roots = [
         crate::util::app_dirs::data_dir(),
         crate::util::app_dirs::config_dir(),
-        home.join("homebrew/plugins"),
-        PathBuf::from("/home/deck/homebrew/plugins"),
     ];
     if allowed_roots.iter().any(|root| path.starts_with(root)) {
         return Ok(());

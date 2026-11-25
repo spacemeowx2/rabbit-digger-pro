@@ -1,0 +1,239 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
+mod api;
+mod app;
+mod components;
+#[cfg(not(target_family = "wasm"))]
+mod engine;
+mod pages;
+#[cfg(windows)]
+mod service;
+mod store;
+mod theme;
+
+use gpui::{px, size, App, AppContext, Bounds, QuitMode, WindowBounds, WindowOptions};
+
+/// Family name of the embedded font. Must match the name table of `UI_FONT`.
+/// GPUI's own default family (`.SystemUIFont`) cannot resolve in a browser: the
+/// platform maps it to a generic system font and that lookup has no fallback
+/// there, so the wasm build names this face explicitly instead.
+#[cfg(target_family = "wasm")]
+pub const UI_FAMILY: &str = "RdpUI";
+
+/// Subset of Noto Sans SC registered as `UI_FAMILY`. Only the wasm build
+/// needs it: native backends read the operating system's fonts.
+#[cfg(target_family = "wasm")]
+const UI_FONT: &[u8] = include_bytes!("../assets/fonts/RdpUI.otf");
+
+#[cfg(not(target_family = "wasm"))]
+#[derive(clap::Parser)]
+#[command(name = "rdp-gui", about = "Rabbit Digger Pro desktop UI")]
+struct Args {
+    /// Config file the embedded engine loads.
+    #[arg(short, long, env = "RD_CONFIG", default_value = "config.yaml")]
+    config: std::path::PathBuf,
+
+    /// Attach to an already running daemon instead of starting the engine.
+    #[arg(long, env = "RD_API")]
+    api: Option<String>,
+
+    /// Internal: run the privileged TUN engine under the Windows SCM.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service_run: bool,
+
+    /// Internal: directory used by the service for settings and subscriptions.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    service_data_dir: Option<std::path::PathBuf>,
+
+    /// Internal: copy this executable to Program Files and install the service.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    install_service: bool,
+
+    /// Internal: stop and remove the service.
+    #[cfg(windows)]
+    #[arg(long, hide = true)]
+    uninstall_service: bool,
+}
+
+#[cfg(all(windows, not(target_family = "wasm")))]
+fn init_platform() {
+    // GPUI has no manifest to declare DPI awareness, so a high-DPI display
+    // would otherwise scale the window as a bitmap. Do it before any window
+    // exists; PerMonitorV2 keeps dragging between monitors sharp.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetProcessDpiAwarenessContext(value: isize) -> i32;
+        fn SetProcessDPIAware() -> i32;
+    }
+
+    const PER_MONITOR_AWARE_V2: isize = -4;
+    unsafe {
+        if SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2) == 0 {
+            SetProcessDPIAware();
+        }
+    }
+}
+
+#[cfg(not(all(windows, not(target_family = "wasm"))))]
+fn init_platform() {}
+
+fn main() {
+    init_platform();
+
+    #[cfg(target_family = "wasm")]
+    {
+        console_error_panic_hook::set_once();
+        gpui_platform::web_init();
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    let args = <Args as clap::Parser>::parse();
+
+    #[cfg(windows)]
+    {
+        if args.service_run {
+            if let Err(error) = service::run_service() {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+        if args.install_service {
+            let data_dir = args
+                .service_data_dir
+                .clone()
+                .unwrap_or_else(rabbit_digger_pro::util::app_dirs::data_dir);
+            if let Err(error) = service::install_service(data_dir) {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+        if args.uninstall_service {
+            let data_dir = args
+                .service_data_dir
+                .clone()
+                .unwrap_or_else(rabbit_digger_pro::util::app_dirs::data_dir);
+            if let Err(error) = service::uninstall_service(data_dir) {
+                service::write_error(&error);
+                std::process::exit(1);
+            }
+            return;
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    let (endpoint, token, backend) = endpoint(&args);
+    #[cfg(target_family = "wasm")]
+    let (endpoint, token, backend) = (endpoint(), None::<String>, store::Backend::External);
+
+    gpui_platform::application()
+        .with_quit_mode(QuitMode::LastWindowClosed)
+        .run(move |cx: &mut App| {
+            // Browsers expose no system fonts, so the wasm build carries its
+            // own subset. See `scripts/build-font-subset.py`.
+            #[cfg(target_family = "wasm")]
+            cx.text_system()
+                .add_fonts(vec![std::borrow::Cow::Borrowed(UI_FONT)])
+                .expect("the embedded UI font is valid");
+
+            let bounds = Bounds::centered(None, size(px(1120.), px(760.)), cx);
+            cx.open_window(
+                WindowOptions::default().window_bounds(WindowBounds::Windowed(bounds)),
+                |_window, cx| {
+                    cx.new(|cx| app::Root::new(endpoint.clone(), token.clone(), backend, cx))
+                },
+            )
+            .expect("failed to open the main window");
+            cx.activate(true);
+        });
+}
+
+/// Native builds use the installed service when configured, otherwise start
+/// the engine in-process. `--api` still attaches to an external daemon.
+#[cfg(not(target_family = "wasm"))]
+fn endpoint(args: &Args) -> (String, Option<String>, store::Backend) {
+    if let Some(api) = &args.api {
+        return (api.clone(), None, store::Backend::External);
+    }
+
+    #[cfg(windows)]
+    if let Some(config) = service::read_user_config() {
+        return (config.endpoint, Some(config.token), store::Backend::Service);
+    }
+
+    engine::init_logging();
+    match engine::start(args.config.clone()) {
+        Ok(addr) => (addr.to_string(), None, store::Backend::Embedded),
+        Err(error) => {
+            // Keep the window usable: it shows the connection as failed and
+            // the reason in the status page.
+            eprintln!("failed to start the embedded engine: {error:#}");
+            (
+                api::DEFAULT_ENDPOINT.to_string(),
+                None,
+                store::Backend::Embedded,
+            )
+        }
+    }
+}
+
+/// A browser build reads `?api=` from the page URL and otherwise talks to
+/// whatever host served the page.
+#[cfg(target_family = "wasm")]
+fn endpoint() -> String {
+    let Some(window) = web_sys::window() else {
+        return api::DEFAULT_ENDPOINT.to_string();
+    };
+    let location = window.location();
+
+    let search = location.search().unwrap_or_default();
+    for pair in search.trim_start_matches('?').split('&') {
+        if let Some(value) = pair.strip_prefix("api=") {
+            if !value.is_empty() {
+                return percent_decode(value);
+            }
+        }
+    }
+
+    // Served by the daemon itself: same host, so the socket goes there too.
+    let host = location.host().unwrap_or_default();
+    if !host.is_empty() {
+        return host;
+    }
+
+    api::DEFAULT_ENDPOINT.to_string()
+}
+
+#[cfg(target_family = "wasm")]
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("00");
+                if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                    out.push(byte);
+                    index += 3;
+                    continue;
+                }
+                out.push(bytes[index]);
+                index += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}

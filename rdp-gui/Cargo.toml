@@ -1,0 +1,67 @@
+[package]
+name = "rdp-gui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Native and web GUI for rabbit-digger-pro, built with GPUI"
+
+[dependencies]
+gpui = { package = "gpui-ce", version = "0.3" }
+# `multithreaded` is off by default here: it needs a nightly `build-std`
+# WebAssembly toolchain. A single-threaded wasm build runs on stable.
+gpui_platform = { package = "gpui_ce_platform", version = "0.3", default-features = false, features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = "0.28"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+rd-interface = { path = "../rd-interface" }
+sha2 = "0.10"
+rabbit-digger-pro = { path = "..", default-features = false, features = [
+    "ss",
+    "trojan",
+    "rpc",
+    "obfs",
+    "hysteria",
+    "vless",
+    "anytls",
+    "raw",
+    "api_server",
+    "rhai",
+] }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+web-sys = { version = "0.3", features = [
+    "WebSocket",
+    "MessageEvent",
+    "Event",
+    "CloseEvent",
+    "BinaryType",
+    "Window",
+    "Location",
+    "Url",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+[[bin]]
+name = "rdp-gui"
+path = "src/main.rs"

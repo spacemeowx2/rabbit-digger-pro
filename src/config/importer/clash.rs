@@ -107,6 +107,13 @@ struct ProxyGroup {
     #[serde(rename = "type")]
     proxy_group_type: String,
     proxies: Vec<String>,
+    url: Option<String>,
+    interval: Option<u64>,
+    tolerance: Option<u64>,
+    #[serde(rename = "test-timeout")]
+    test_timeout: Option<u64>,
+    #[serde(rename = "max-failed-times")]
+    max_failed_times: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,19 +405,29 @@ impl Clash {
                     "list": net_list,
                 }),
             ),
-            "url-test" | "fallback" => {
-                tracing::warn!(
-                    "Unsupported proxy group type: {}, will use select as fallback.",
-                    proxy_group_type
-                );
-                Net::new(
-                    "select",
-                    json!({
-                        "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
-                        "list": net_list,
-                    }),
-                )
-            }
+            "url-test" => Net::new(
+                "url-test",
+                json!({
+                    "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
+                    "list": net_list,
+                    "url": p.url.unwrap_or_else(crate::auto_select::default_test_url),
+                    "interval": p.interval.unwrap_or(300),
+                    "tolerance": p.tolerance.unwrap_or(0),
+                    "test_timeout": p.test_timeout.unwrap_or(5_000),
+                    "max_failed_times": p.max_failed_times.unwrap_or(5),
+                }),
+            ),
+            "fallback" => Net::new(
+                "fallback",
+                json!({
+                    "selected": net_list.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
+                    "list": net_list,
+                    "url": p.url.unwrap_or_else(crate::auto_select::default_test_url),
+                    "interval": p.interval.unwrap_or(300),
+                    "test_timeout": p.test_timeout.unwrap_or(5_000),
+                    "max_failed_times": p.max_failed_times.unwrap_or(5),
+                }),
+            ),
             "relay" => {
                 let net = net_list.iter().try_fold(self.base_proxy_net(), |acc, x| {
                     let proxy = proxy_map.get(x).ok_or(anyhow!(
@@ -565,6 +582,8 @@ impl Importer for Clash {
     ) -> Result<()> {
         let clash_config: ClashConfig = serde_yaml::from_str(content)?;
         let mut added_proxies = Vec::new();
+        let mut first_select: Option<String> = None;
+        let mut first_auto: Option<String> = None;
         let mut proxy_map = HashMap::new();
 
         for p in clash_config.proxies {
@@ -600,6 +619,15 @@ impl Importer for Clash {
                 let name = self.proxy_group_name(&old_name);
                 match self.proxy_group_to_net(pg, &proxy_map) {
                     Ok(pg) => {
+                        match pg.net_type.as_str() {
+                            "select" if first_select.is_none() => {
+                                first_select = Some(name.clone());
+                            }
+                            "url-test" | "fallback" if first_auto.is_none() => {
+                                first_auto = Some(name.clone());
+                            }
+                            _ => {}
+                        }
                         config.net.insert(name, pg);
                     }
                     Err(e) => {
@@ -611,7 +639,7 @@ impl Importer for Clash {
 
         if let Some(rule_name) = &self.rule_name {
             let oom_lock = Mutex::new(());
-            let rule = stream::iter(clash_config.rules)
+            let mut rule = stream::iter(clash_config.rules)
                 .map(|r| self.rule_to_rule(r, cache, &clash_config.rule_providers, &oom_lock))
                 .buffered(10)
                 .flat_map(stream::iter)
@@ -630,6 +658,24 @@ impl Importer for Clash {
                 )
                 .await;
 
+            // A config without MATCH would drop every untouched connection.
+            // Fall back to the first selector (which usually defaults to its
+            // url-test group), then to the first auto group or proxy.
+            if !rule
+                .iter()
+                .any(|item| matches!(item.matcher, Matcher::Any(_)))
+            {
+                let target = first_select
+                    .clone()
+                    .or_else(|| first_auto.clone())
+                    .or_else(|| added_proxies.first().cloned())
+                    .unwrap_or_else(|| "local".to_string());
+                rule.push(rule_config::RuleItem {
+                    target: NetRef::new(target.into()),
+                    matcher: Matcher::Any(AnyMatcher {}),
+                });
+            }
+
             config
                 .net
                 .insert(rule_name.clone(), Net::new("rule", json!({ "rule": rule })));
@@ -641,7 +687,7 @@ impl Importer for Clash {
                 Net::new(
                     "select",
                     json!({
-                        "selected": added_proxies.get(0).cloned().unwrap_or_else(|| "noop".to_string()),
+                        "selected": added_proxies.first().cloned().unwrap_or_else(|| "noop".to_string()),
                         "list": added_proxies,
                     }),
                 ),
@@ -737,6 +783,89 @@ rules: []
             net.opt.get("net").and_then(|v| v.as_str()),
             Some("node_out")
         );
+    }
+
+
+    #[tokio::test]
+    async fn test_rule_import_keeps_clash_groups_and_match_target() {
+        let mut clash = base_clash();
+        clash.rule_name = Some("rule".to_string());
+
+        let content = r#"
+proxies:
+  - name: ad
+    type: http
+    server: 127.0.0.1
+    port: 1
+  - name: node
+    type: http
+    server: 127.0.0.1
+    port: 2
+proxy-groups:
+  - name: auto
+    type: url-test
+    proxies: [ad, node]
+    url: http://example.com/204
+    interval: 60
+  - name: main
+    type: select
+    proxies: [auto, ad, node]
+rules:
+  - MATCH,main
+"#;
+
+        let mut config = Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        clash.process(&mut config, content, &cache).await.unwrap();
+
+        let main = config.net.get("main").unwrap();
+        assert_eq!(main.net_type, "select");
+        assert_eq!(
+            main.opt.get("selected").and_then(|v| v.as_str()),
+            Some("auto")
+        );
+        assert_eq!(
+            main.opt.get("list"),
+            Some(&json!(["auto", "ad", "node"]))
+        );
+        assert_eq!(config.net.get("auto").unwrap().net_type, "url-test");
+        assert_eq!(config.net.get("rule").unwrap().net_type, "rule");
+        let rules = config.net.get("rule").unwrap().opt.get("rule").unwrap();
+        assert!(rules.as_array().unwrap().iter().any(|rule| {
+            rule.get("target").and_then(|target| target.as_str()) == Some("main")
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_rule_import_adds_match_when_the_subscription_has_none() {
+        let mut clash = base_clash();
+        clash.rule_name = Some("rule".to_string());
+
+        let content = r#"
+proxies:
+  - name: node
+    type: http
+    server: 127.0.0.1
+    port: 1
+proxy-groups:
+  - name: auto
+    type: url-test
+    proxies: [node]
+    url: http://example.com/204
+  - name: main
+    type: select
+    proxies: [auto, node]
+rules: []
+"#;
+
+        let mut config = Config::default();
+        let cache = crate::storage::MemoryCache::new().await.unwrap();
+        clash.process(&mut config, content, &cache).await.unwrap();
+
+        let rules = config.net.get("rule").unwrap().opt.get("rule").unwrap().as_array().unwrap();
+        let last = rules.last().unwrap();
+        assert_eq!(last.get("target").and_then(|v| v.as_str()), Some("main"));
+        assert_eq!(last.get("type").and_then(|v| v.as_str()), Some("any"));
     }
 
     #[test]
@@ -963,6 +1092,11 @@ rules: []
             name: "g".to_string(),
             proxy_group_type: "select".to_string(),
             proxies: vec!["a".to_string(), "b".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert_eq!(
             c.proxy_group_to_net(pg_select, &proxy_map)
@@ -975,18 +1109,64 @@ rules: []
             name: "g".to_string(),
             proxy_group_type: "url-test".to_string(),
             proxies: vec!["a".to_string()],
+            url: Some("http://example.com/test".to_string()),
+            interval: Some(42),
+            tolerance: Some(7),
+            test_timeout: Some(1234),
+            max_failed_times: Some(3),
         };
+        let net = c.proxy_group_to_net(pg_urltest, &proxy_map).unwrap();
+        assert_eq!(net.net_type, "url-test");
         assert_eq!(
-            c.proxy_group_to_net(pg_urltest, &proxy_map)
-                .unwrap()
-                .net_type,
-            "select"
+            net.opt.get("url").and_then(|v| v.as_str()),
+            Some("http://example.com/test")
+        );
+        assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(42));
+        assert_eq!(net.opt.get("tolerance").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(
+            net.opt.get("test_timeout").and_then(|v| v.as_u64()),
+            Some(1234)
+        );
+        assert_eq!(
+            net.opt.get("max_failed_times").and_then(|v| v.as_u64()),
+            Some(3)
+        );
+
+        let pg_fallback = ProxyGroup {
+            name: "g".to_string(),
+            proxy_group_type: "fallback".to_string(),
+            proxies: vec!["a".to_string()],
+            url: Some("http://example.com/fallback".to_string()),
+            interval: Some(24),
+            tolerance: None,
+            test_timeout: Some(2345),
+            max_failed_times: Some(4),
+        };
+        let net = c.proxy_group_to_net(pg_fallback, &proxy_map).unwrap();
+        assert_eq!(net.net_type, "fallback");
+        assert_eq!(
+            net.opt.get("url").and_then(|v| v.as_str()),
+            Some("http://example.com/fallback")
+        );
+        assert_eq!(net.opt.get("interval").and_then(|v| v.as_u64()), Some(24));
+        assert_eq!(
+            net.opt.get("test_timeout").and_then(|v| v.as_u64()),
+            Some(2345)
+        );
+        assert_eq!(
+            net.opt.get("max_failed_times").and_then(|v| v.as_u64()),
+            Some(4)
         );
 
         let pg_relay_missing_proxy = ProxyGroup {
             name: "g".to_string(),
             proxy_group_type: "relay".to_string(),
             proxies: vec!["b".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert!(c
             .proxy_group_to_net(pg_relay_missing_proxy, &proxy_map)
@@ -996,6 +1176,11 @@ rules: []
             name: "g".to_string(),
             proxy_group_type: "bad".to_string(),
             proxies: vec!["a".to_string()],
+            url: None,
+            interval: None,
+            tolerance: None,
+            test_timeout: None,
+            max_failed_times: None,
         };
         assert!(c.proxy_group_to_net(pg_bad, &proxy_map).is_err());
     }

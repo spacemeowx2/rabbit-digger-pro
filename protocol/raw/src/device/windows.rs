@@ -1,7 +1,10 @@
 use std::{
     io::{self, Write},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
 };
 
 use crate::config::{Layer, TunTapSetup};
@@ -15,8 +18,14 @@ use tokio_smoltcp::{
 use wintun::{Adapter, Wintun};
 
 static WINTUN: OnceCell<Wintun> = OnceCell::new();
-const POOL_NAME: &'static str = "rabbit-digger-pro";
-const DEVICE_NAME: &'static str = "rabbit digger pro";
+static TUN_ADAPTER_INDEX: AtomicU32 = AtomicU32::new(0);
+pub(crate) const POOL_NAME: &'static str = "rabbit-digger-pro";
+pub(crate) const DEVICE_NAME: &'static str = "rabbit digger pro";
+
+pub(crate) fn adapter_index() -> Option<u32> {
+    let index = TUN_ADAPTER_INDEX.load(Ordering::Relaxed);
+    (index != 0).then_some(index)
+}
 
 fn get_wintun() -> Result<&'static Wintun> {
     WINTUN.get_or_try_init(|| {
@@ -31,8 +40,14 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<ChannelCapture> {
         return Err(Error::Other("On windows only support tun".into()));
     }
 
+    if !crate::route_setup::is_elevated().map_err(|error| Error::Other(error.into()))? {
+        return Err(Error::Other(
+            "TUN mode on Windows requires running as administrator".into(),
+        ));
+    }
+
     let wintun = get_wintun()?;
-    let adapter = match Adapter::open(wintun, DEVICE_NAME) {
+    let adapter = match Adapter::open(wintun, POOL_NAME) {
         Ok(a) => a,
         Err(_) => Adapter::create(wintun, POOL_NAME, DEVICE_NAME, None)
             .map_err(|_| rd_interface::Error::other("Failed to create wintun"))?,
@@ -47,14 +62,18 @@ pub fn get_tun(cfg: TunTapSetup) -> Result<ChannelCapture> {
     let wintun_adapter_index = adapter
         .get_adapter_index()
         .map_err(|_| rd_interface::Error::other("Failed to get adapter index"))?;
+    TUN_ADAPTER_INDEX.store(wintun_adapter_index, Ordering::Relaxed);
+
+    let prefix_len = cfg.destination_addr.prefix_len();
 
     run_netsh(format!("set interface {} metric=250", wintun_adapter_index))?;
-    run_netsh(format!(
-        "set address {} static {}/{} gateway={} store=active",
-        wintun_adapter_index,
-        cfg.addr,
-        cfg.destination_addr.prefix_len(),
-        cfg.destination_addr.address(),
+    run_powershell(&format!(
+        "$ErrorActionPreference='Stop'; \
+         Remove-NetIPAddress -InterfaceIndex {index} -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue; \
+         New-NetIPAddress -InterfaceIndex {index} -IPAddress {addr} -PrefixLength {prefix} -ErrorAction Stop",
+        index = wintun_adapter_index,
+        addr = cfg.addr,
+        prefix = prefix_len,
     ))?;
 
     let recv = move |tx: Sender<io::Result<Vec<u8>>>| loop {
@@ -114,5 +133,27 @@ fn run_netsh(cmd_str: String) -> Result<()> {
         return Err(Error::Other("Failed to run netsh".into()));
     }
 
+    Ok(())
+}
+
+fn run_powershell(script: &str) -> Result<()> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(map_other)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Other(
+            format!("powershell failed: {}", stderr.trim()).into(),
+        ));
+    }
     Ok(())
 }

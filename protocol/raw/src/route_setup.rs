@@ -6,8 +6,10 @@
 use std::process::Command;
 
 use rd_interface::side_effect::{SideEffectManager, SideEffectUndo};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tracing::debug;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const TUN_TABLE: &str = "2468";
 
 pub struct RouteSetupConfig {
@@ -15,6 +17,9 @@ pub struct RouteSetupConfig {
     pub tun_gateway: String,
     pub fwmark: u32,
     pub dns_ip: String,
+    /// Proxy server addresses that must stay on the physical route (Windows
+    /// adds explicit /32 routes for them).
+    pub bypass_ips: Vec<String>,
 }
 
 /// Set up system routes for TUN global mode.
@@ -24,6 +29,8 @@ pub fn setup_routes(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> R
     setup_linux(mgr, config)?;
     #[cfg(target_os = "macos")]
     setup_macos(mgr, config)?;
+    #[cfg(target_os = "windows")]
+    setup_windows(mgr, config)?;
 
     Ok(())
 }
@@ -32,6 +39,7 @@ pub fn setup_routes(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> R
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn cmd_undo(cmd: &str, args: &[&str]) -> SideEffectUndo {
     SideEffectUndo::Command {
         cmd: cmd.to_string(),
@@ -39,6 +47,7 @@ fn cmd_undo(cmd: &str, args: &[&str]) -> SideEffectUndo {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     debug!("Running: {cmd} {}", args.join(" "));
     let output = Command::new(cmd)
@@ -330,4 +339,227 @@ fn get_dns_macos(service: &str) -> Vec<String> {
         }
         None => vec![],
     }
+}
+
+// ---------------------------------------------------------------------------
+// Windows
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+fn setup_windows(mgr: &mut SideEffectManager, config: &RouteSetupConfig) -> Result<(), String> {
+    use std::net::{Ipv4Addr, ToSocketAddrs};
+
+    if !is_elevated()? {
+        return Err("TUN mode on Windows requires running as administrator".to_string());
+    }
+
+    let tun_index = get_tun_interface_index()?;
+    let original_metric = get_interface_metric(tun_index)?;
+
+    // Resolve bypass targets before the split default routes are installed, so
+    // a hostname resolution cannot be captured by the TUN itself.
+    let mut bypass_ips = Vec::new();
+    for entry in &config.bypass_ips {
+        if let Ok(ip) = entry.parse::<Ipv4Addr>() {
+            bypass_ips.push(ip);
+            continue;
+        }
+        match (entry.as_str(), 0).to_socket_addrs() {
+            Ok(addrs) => {
+                for addr in addrs {
+                    if let std::net::SocketAddr::V4(v4) = addr {
+                        bypass_ips.push(*v4.ip());
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!("TUN bypass host {entry} did not resolve: {error}");
+            }
+        }
+    }
+
+    add_split_route(mgr, "0.0.0.0/1", tun_index)?;
+    add_split_route(mgr, "128.0.0.0/1", tun_index)?;
+
+    if !bypass_ips.is_empty() {
+        let (physical_index, gateway) = get_default_route_windows()?;
+        for ip in bypass_ips {
+            add_bypass_route(mgr, ip, physical_index, &gateway)?;
+        }
+    }
+
+    // Prefer the TUN interface for DNS so Windows uses the TUN DNS handler.
+    let metric_script = format!(
+        "Set-NetIPInterface -InterfaceIndex {tun_index} -AddressFamily IPv4 -InterfaceMetric 1 -ErrorAction Stop"
+    );
+    let metric_undo = format!(
+        "Set-NetIPInterface -InterfaceIndex {tun_index} -AddressFamily IPv4 -InterfaceMetric {original_metric} -ErrorAction SilentlyContinue"
+    );
+    mgr.apply(
+        format!("Windows TUN interface metric ({tun_index})"),
+        || run_powershell(&metric_script).map(|_| ()),
+        ps_undo(&metric_undo),
+    )?;
+
+    let dns_script = format!(
+        "Set-DnsClientServerAddress -InterfaceIndex {tun_index} -ServerAddresses @('{}') -ErrorAction Stop",
+        config.dns_ip
+    );
+    let dns_undo = format!(
+        "Set-DnsClientServerAddress -InterfaceIndex {tun_index} -ResetServerAddresses -ErrorAction SilentlyContinue"
+    );
+    mgr.apply(
+        format!("Windows TUN DNS ({})", config.dns_ip),
+        || run_powershell(&dns_script).map(|_| ()),
+        ps_undo(&dns_undo),
+    )?;
+
+    tracing::info!(
+        "Windows TUN routes installed on interface {tun_index}, dns={}",
+        config.dns_ip
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn add_split_route(
+    mgr: &mut SideEffectManager,
+    prefix: &str,
+    tun_index: u32,
+) -> Result<(), String> {
+    let script = format!(
+        "Remove-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {tun_index} -Confirm:$false -ErrorAction SilentlyContinue; \
+         New-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {tun_index} -NextHop '0.0.0.0' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop"
+    );
+    let undo = format!(
+        "Remove-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {tun_index} -Confirm:$false -ErrorAction SilentlyContinue"
+    );
+    mgr.apply(
+        format!("Windows TUN route {prefix}"),
+        || run_powershell(&script).map(|_| ()),
+        ps_undo(&undo),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn add_bypass_route(
+    mgr: &mut SideEffectManager,
+    ip: std::net::Ipv4Addr,
+    physical_index: u32,
+    gateway: &str,
+) -> Result<(), String> {
+    let prefix = format!("{ip}/32");
+    let script = format!(
+        "Remove-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {physical_index} -Confirm:$false -ErrorAction SilentlyContinue; \
+         New-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {physical_index} -NextHop '{gateway}' -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop"
+    );
+    let undo = format!(
+        "Remove-NetRoute -DestinationPrefix '{prefix}' -InterfaceIndex {physical_index} -Confirm:$false -ErrorAction SilentlyContinue"
+    );
+    mgr.apply(
+        format!("Windows TUN bypass {prefix}"),
+        || run_powershell(&script).map(|_| ()),
+        ps_undo(&undo),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn get_tun_interface_index() -> Result<u32, String> {
+    if let Some(index) = crate::device::tun_adapter_index() {
+        return Ok(index);
+    }
+
+    let name = crate::device::WINDOWS_TUN_ADAPTER_NAME;
+    let script = format!(
+        "$i=0; do {{ $a=Get-NetAdapter -Name '{name}' -ErrorAction SilentlyContinue; \
+         if ($a) {{ $a.ifIndex; break }}; Start-Sleep -Milliseconds 200; $i++ }} while ($i -lt 50); \
+         if (-not $a) {{ throw 'TUN adapter not found' }}"
+    );
+    run_powershell(&script)?
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| format!("invalid TUN interface index: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn get_interface_metric(index: u32) -> Result<u32, String> {
+    let script = format!(
+        "(Get-NetIPInterface -InterfaceIndex {index} -AddressFamily IPv4 -ErrorAction Stop).InterfaceMetric"
+    );
+    run_powershell(&script)?
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| format!("invalid interface metric: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn get_default_route_windows() -> Result<(u32, String), String> {
+    let script = r#"
+$r = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' |
+     Where-Object { $_.NextHop -ne '0.0.0.0' } |
+     Sort-Object RouteMetric | Select-Object -First 1
+if (-not $r) { throw 'No IPv4 default route' }
+"$($r.InterfaceIndex)|$($r.NextHop)"
+"#;
+    let output = run_powershell(script)?;
+    let mut parts = output.trim().split('|');
+    let index = parts
+        .next()
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| format!("invalid default route output: {output}"))?;
+    let gateway = parts
+        .next()
+        .ok_or_else(|| format!("missing default gateway: {output}"))?
+        .to_string();
+    Ok((index, gateway))
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn is_elevated() -> Result<bool, String> {
+    let output = run_powershell(
+        "([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+    )?;
+    Ok(output.trim().eq_ignore_ascii_case("true"))
+}
+
+#[cfg(target_os = "windows")]
+fn ps_undo(script: &str) -> SideEffectUndo {
+    SideEffectUndo::Command {
+        cmd: "powershell".to_string(),
+        args: vec![
+            "-NoProfile".to_string(),
+            "-NonInteractive".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-Command".to_string(),
+            script.to_string(),
+        ],
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_powershell(script: &str) -> Result<String, String> {
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        .output()
+        .map_err(|error| format!("powershell: {error}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!(
+            "powershell failed: {} {}",
+            stderr.trim(),
+            stdout.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

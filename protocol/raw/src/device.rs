@@ -20,6 +20,10 @@ mod pcap_dev;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+pub(crate) use self::windows::{
+    adapter_index as tun_adapter_index, POOL_NAME as WINDOWS_TUN_ADAPTER_NAME,
+};
+#[cfg(windows)]
 use crate::device::windows::get_tun;
 
 pub fn get_device(config: &RawNetConfig) -> Result<(EthernetAddress, BoxedAsyncDevice)> {

@@ -163,6 +163,7 @@ impl IServer for TunServer {
                     tun_gateway: gateway.to_string(),
                     fwmark: config.fwmark,
                     dns_ip: gateway.to_string(),
+                    bypass_ips: config.bypass_ips.clone(),
                 },
             )
             .map_err(|e| rd_interface::Error::other(format!("Route setup failed: {e}")))?;
