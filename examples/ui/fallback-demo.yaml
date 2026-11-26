@@ -1,0 +1,24 @@
+id: ui-auto-fallback-demo
+net:
+  local:
+    type: local
+  direct-a:
+    type: alias
+    net: local
+  direct-b:
+    type: alias
+    net: local
+  auto-fallback-group:
+    type: fallback
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+server:
+  mixed:
+    type: http+socks5
+    bind: 127.0.0.1:11082
+    net: auto-fallback-group
+    listen: local

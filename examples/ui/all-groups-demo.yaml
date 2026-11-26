@@ -1,0 +1,55 @@
+id: ui-all-groups-demo
+net:
+  local:
+    type: local
+  direct-a:
+    type: alias
+    net: local
+  direct-b:
+    type: alias
+    net: local
+  direct-c:
+    type: alias
+    net: local
+  manual-group:
+    type: select
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+      - direct-c
+  auto-url-group:
+    type: url-test
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+      - direct-c
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+    tolerance: 50
+  auto-fallback-group:
+    type: fallback
+    selected: direct-a
+    list:
+      - direct-a
+      - direct-b
+      - direct-c
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+server:
+  mixed-select:
+    type: http+socks5
+    bind: 127.0.0.1:12080
+    net: manual-group
+    listen: local
+  mixed-url-test:
+    type: http+socks5
+    bind: 127.0.0.1:12081
+    net: auto-url-group
+    listen: local
+  mixed-fallback:
+    type: http+socks5
+    bind: 127.0.0.1:12082
+    net: auto-fallback-group
+    listen: local
